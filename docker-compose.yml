@@ -1,0 +1,73 @@
+# CLOUD ENGINEERING NOTE:
+# docker-compose is for LOCAL development and testing only.
+# In AWS, ECS task definitions replace this file.
+# The concepts map directly:
+#   compose service  →  ECS task definition
+#   depends_on       →  ECS service ordering / health checks
+#   volumes          →  EFS (Elastic File System) or ephemeral task storage
+#   networks         →  VPC + security groups
+#   environment      →  ECS task env vars or Secrets Manager references
+
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: cloudnotes_db
+    environment:
+      POSTGRES_DB: cloudnotes
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      # Named volume: data persists across `docker compose down` / `up`
+      # CLOUD EQUIVALENT: RDS (managed) or EBS volume mounted to EC2
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"     # expose for local DB clients (TablePlus, psql, etc.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cloudnotes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cloudnotes_backend
+    environment:
+      # Connection string uses "db" — Docker's internal DNS resolves service names
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/cloudnotes
+      APP_ENV: local
+    ports:
+      - "8000:8000"     # expose for direct API testing (curl, Postman, /docs)
+    depends_on:
+      db:
+        condition: service_healthy   # wait for Postgres to be ready
+    develop:
+      watch:
+        # Hot-reload: sync local code changes into the container without rebuild
+        - action: sync
+          path: ./backend/app
+          target: /app/app
+
+  # ── React frontend (Nginx) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: ./frontend/Dockerfile
+      args:
+        APP_ENV: local
+    container_name: cloudnotes_frontend
+    ports:
+      - "80:80"         # access the app at http://localhost
+    depends_on:
+      - backend
+
+
+volumes:
+  # Named volumes survive container restarts — unlike bind mounts they're managed by Docker
+  postgres_data:
