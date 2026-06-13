@@ -1,18 +1,23 @@
 import time
+from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-import app.models  # noqa: F401 — registers all models with SQLAlchemy metadata
-from app.database import Base, engine
 from app.logger import get_logger, setup_logging
 from app.routers import auth, notes
 
 setup_logging()
 log = get_logger("app")
 
-Base.metadata.create_all(bind=engine)
-log.info("Database tables ensured")
+# Run any pending Alembic migrations on startup.
+# In production this would be a separate pre-deploy step; here it keeps
+# local dev simple — just start the server and the schema is always current.
+_alembic_cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+command.upgrade(_alembic_cfg, "head")
+log.info("Database migrations applied")
 
 app = FastAPI(
     title="CloudNotes API",
