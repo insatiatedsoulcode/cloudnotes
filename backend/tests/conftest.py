@@ -23,6 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+from unittest.mock import patch
 
 import app.models  # noqa: F401 — registers all ORM models before create_all
 from app.database import Base, get_db
@@ -52,7 +53,9 @@ def clean_tables(create_tables):
     CASCADE handles FK ordering automatically.
     """
     with _engine.connect() as conn:
-        conn.execute(text("TRUNCATE TABLE notes, users RESTART IDENTITY CASCADE"))
+        conn.execute(text(
+            "TRUNCATE TABLE email_verifications, notes, users RESTART IDENTITY CASCADE"
+        ))
         conn.commit()
 
 
@@ -92,6 +95,19 @@ def reset_rate_limiter():
     reset_limits()
 
 
+@pytest.fixture(autouse=True)
+def mock_email():
+    """
+    Suppress real SMTP calls in every test.
+
+    Patches send_verification_email at the call site (app.routers.auth).
+    Tests that need to capture the token read:
+        mock_email.call_args.kwargs["token"]
+    """
+    with patch("app.routers.auth.send_verification_email") as mock_fn:
+        yield mock_fn
+
+
 # ── Dependency override ───────────────────────────────────────────────────────
 
 def _override_get_db():
@@ -105,6 +121,18 @@ def _override_get_db():
 app.dependency_overrides[get_db] = _override_get_db
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _auto_verify(user_id: int) -> None:
+    """Directly set is_verified=True in the test DB — bypasses the email flow."""
+    from app.models.user import User as UserModel
+    db = _TestSession()
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    user.is_verified = True
+    db.commit()
+    db.close()
+
+
 # ── Core fixtures ─────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -115,12 +143,18 @@ def client():
 
 @pytest.fixture
 def registered_user(client):
-    """A freshly registered normal user."""
+    """A freshly registered and auto-verified normal user.
+
+    Auto-verification lets existing CRUD/cache/workspace tests work without
+    each test going through the email flow.  Tests for the verification flow
+    itself live in test_email_verification.py and work with the unverified state.
+    """
     res = client.post("/api/auth/register", json={
         "email": "user@test.com",
         "password": "Password123",
     })
     assert res.status_code == 201, res.json()
+    _auto_verify(res.json()["id"])
     return res.json()
 
 
@@ -137,10 +171,11 @@ def auth_headers(client, registered_user):
 @pytest.fixture
 def second_user_headers(client):
     """Authorization header for a second, different user (for ownership tests)."""
-    client.post("/api/auth/register", json={
+    res_reg = client.post("/api/auth/register", json={
         "email": "other@test.com",
         "password": "Password123",
     })
+    _auto_verify(res_reg.json()["id"])
     res = client.post("/api/auth/login",
                       data={"username": "other@test.com", "password": "Password123"})
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
@@ -153,7 +188,12 @@ def admin_headers(client):
     from app.routers.auth import _hash
 
     db = _TestSession()
-    admin = User(email="admin@test.com", password_hash=_hash("AdminPass123"), role="admin")
+    admin = User(
+        email="admin@test.com",
+        password_hash=_hash("AdminPass123"),
+        role="admin",
+        is_verified=True,
+    )
     db.add(admin)
     db.commit()
     db.close()
@@ -163,8 +203,6 @@ def admin_headers(client):
     assert res.status_code == 200, res.json()
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_note(client, headers, title="Test note", content="Test content"):
     """Create a note and return the response JSON."""

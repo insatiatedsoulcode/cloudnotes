@@ -13,7 +13,7 @@ from app.cache import (
     cache_set,
 )
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_verified
 from app.limiter import _get_user_or_ip, limiter
 from app.logger import get_logger
 from app.models.note import Note
@@ -86,7 +86,7 @@ def create_note(
     request: Request,
     note: NoteCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_verified),
 ):
     log.info(
         "CREATE  user_id=%d  title=%r  visibility=%s",

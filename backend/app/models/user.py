@@ -14,4 +14,6 @@ class User(Base):
     role = Column(String(20), nullable=False, default="user")
     # False when an admin suspends the account — login and API calls return 403
     is_active = Column(Boolean, nullable=False, default=True)
+    # False until the user clicks the verification link sent on registration
+    is_verified = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

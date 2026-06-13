@@ -8,6 +8,14 @@ class Settings(BaseSettings):
     JWT_EXPIRE_MINUTES: int = 60
     REDIS_URL: str = "redis://localhost:6379"
 
+    # Email / SMTP — defaults match MailHog (local dev mock)
+    SMTP_HOST: str = "localhost"
+    SMTP_PORT: int = 1025
+    SMTP_USER: str = ""
+    SMTP_PASS: str = ""
+    EMAIL_FROM: str = "noreply@cloudnotes.local"
+    APP_BASE_URL: str = "http://localhost:8000"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

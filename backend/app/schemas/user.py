@@ -19,17 +19,19 @@ class UserResponse(BaseModel):
     id: int
     email: str
     role: str
+    is_verified: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
 class UserProfile(BaseModel):
-    """Richer response used by /api/users/me — includes is_active."""
+    """Richer response used by /api/users/me — includes is_active and is_verified."""
     id: int
     email: str
     role: str
     is_active: bool
+    is_verified: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
