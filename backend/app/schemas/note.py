@@ -1,13 +1,20 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class NoteCreate(BaseModel):
     title: str
     content: str
     # author is now set server-side from the JWT user's email, not submitted by client
+
+    @field_validator("title", "content")
+    @classmethod
+    def must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Field must not be empty or whitespace")
+        return v
 
 
 class NoteUpdate(BaseModel):

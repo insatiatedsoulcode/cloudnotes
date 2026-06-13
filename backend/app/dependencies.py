@@ -40,9 +40,10 @@ def get_current_user(
     )
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-        user_id: int = payload.get("sub")
-        if user_id is None:
+        sub = payload.get("sub")
+        if sub is None:
             raise exc
+        user_id = int(sub)  # sub is stored as string (JWT spec), cast back to int
     except JWTError:
         raise exc
 

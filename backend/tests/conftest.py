@@ -1,0 +1,134 @@
+"""
+Test configuration and shared fixtures.
+
+Architecture:
+- A separate `cloudnotes_test` PostgreSQL DB is used — never touches dev data.
+- Tables are created once per test session, then TRUNCATED between every test
+  so each test starts from a clean, empty state.
+- FastAPI's dependency injection is overridden to point at the test DB.
+- All fixtures are function-scoped by default so tests are fully isolated.
+"""
+
+# Set env vars BEFORE any app module is imported.
+# app/database.py reads DATABASE_URL at import time, so this must come first.
+import os
+os.environ.setdefault("DATABASE_URL", "postgresql://deepakkumarsingh@localhost:5432/cloudnotes")
+os.environ.setdefault("SECRET_KEY", "test-secret-key")
+os.environ.setdefault("APP_ENV", "test")
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
+import app.models  # noqa: F401 — registers all ORM models before create_all
+from app.database import Base, get_db
+from app.main import app
+
+TEST_DB_URL = "postgresql://deepakkumarsingh@localhost:5432/cloudnotes_test"
+
+_engine = create_engine(TEST_DB_URL)
+_TestSession = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
+
+
+# ── DB lifecycle ──────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session", autouse=True)
+def create_tables():
+    """Create all tables once for the whole test run."""
+    Base.metadata.create_all(bind=_engine)
+    yield
+    Base.metadata.drop_all(bind=_engine)
+
+
+@pytest.fixture(autouse=True)
+def clean_tables(create_tables):
+    """
+    Truncate every table before each test.
+    RESTART IDENTITY resets auto-increment sequences so IDs start at 1 each time.
+    CASCADE handles FK ordering automatically.
+    """
+    with _engine.connect() as conn:
+        conn.execute(text("TRUNCATE TABLE notes, users RESTART IDENTITY CASCADE"))
+        conn.commit()
+
+
+# ── Dependency override ───────────────────────────────────────────────────────
+
+def _override_get_db():
+    db = _TestSession()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+app.dependency_overrides[get_db] = _override_get_db
+
+
+# ── Core fixtures ─────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def client():
+    """FastAPI TestClient — fires real HTTP through the full middleware stack."""
+    return TestClient(app)
+
+
+@pytest.fixture
+def registered_user(client):
+    """A freshly registered normal user."""
+    res = client.post("/api/auth/register", json={
+        "email": "user@test.com",
+        "password": "Password123",
+    })
+    assert res.status_code == 201, res.json()
+    return res.json()
+
+
+@pytest.fixture
+def auth_headers(client, registered_user):
+    """Authorization header for the normal test user."""
+    res = client.post("/api/auth/login",
+                      data={"username": "user@test.com", "password": "Password123"})
+    assert res.status_code == 200, res.json()
+    token = res.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def second_user_headers(client):
+    """Authorization header for a second, different user (for ownership tests)."""
+    client.post("/api/auth/register", json={
+        "email": "other@test.com",
+        "password": "Password123",
+    })
+    res = client.post("/api/auth/login",
+                      data={"username": "other@test.com", "password": "Password123"})
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+@pytest.fixture
+def admin_headers(client):
+    """Authorization header for an admin user (created directly in the DB)."""
+    from app.models.user import User
+    from app.routers.auth import _hash
+
+    db = _TestSession()
+    admin = User(email="admin@test.com", password_hash=_hash("AdminPass123"), role="admin")
+    db.add(admin)
+    db.commit()
+    db.close()
+
+    res = client.post("/api/auth/login",
+                      data={"username": "admin@test.com", "password": "AdminPass123"})
+    assert res.status_code == 200, res.json()
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def make_note(client, headers, title="Test note", content="Test content"):
+    """Create a note and return the response JSON."""
+    res = client.post("/api/notes/", json={"title": title, "content": content}, headers=headers)
+    assert res.status_code == 201, res.json()
+    return res.json()

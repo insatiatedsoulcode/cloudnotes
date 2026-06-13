@@ -27,7 +27,8 @@ def _verify(plain: str, hashed: str) -> bool:
 
 def _make_token(user_id: int) -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
-    return jwt.encode({"sub": user_id, "exp": expire}, settings.SECRET_KEY, algorithm="HS256")
+    # JWT spec (RFC 7519) requires sub to be a string
+    return jwt.encode({"sub": str(user_id), "exp": expire}, settings.SECRET_KEY, algorithm="HS256")
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
