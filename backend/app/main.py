@@ -5,7 +5,10 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
+from app.limiter import limiter, rate_limit_exceeded_handler
 from app.logger import get_logger, setup_logging
 from app.routers import auth, notes
 
@@ -24,6 +27,11 @@ app = FastAPI(
     description="A simple notes app — POC for cloud engineering concepts",
     version="1.0.0",
 )
+
+# Rate limiter — must be set on app.state before SlowAPIMiddleware is added
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

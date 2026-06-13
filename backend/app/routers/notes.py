@@ -1,10 +1,11 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.limiter import _get_user_or_ip, limiter
 from app.logger import get_logger
 from app.models.note import Note
 from app.models.user import User
@@ -38,7 +39,9 @@ def list_notes(
 
 
 @router.post("/", response_model=NoteResponse, status_code=201)
+@limiter.limit("30/minute", key_func=_get_user_or_ip)
 def create_note(
+    request: Request,
     note: NoteCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -73,7 +76,9 @@ def get_note(
 
 
 @router.put("/{note_id}", response_model=NoteResponse)
+@limiter.limit("30/minute", key_func=_get_user_or_ip)
 def update_note(
+    request: Request,
     note_id: int,
     updates: NoteUpdate,
     db: Session = Depends(get_db),
@@ -94,7 +99,9 @@ def update_note(
 
 
 @router.delete("/{note_id}", status_code=204)
+@limiter.limit("30/minute", key_func=_get_user_or_ip)
 def delete_note(
+    request: Request,
     note_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),

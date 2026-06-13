@@ -53,6 +53,19 @@ def clean_tables(create_tables):
         conn.commit()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Clear in-memory rate limit counters before each test.
+
+    Without this, a test that hits the login endpoint N times would exhaust
+    the limit and cause unrelated tests to receive 429 responses.
+    """
+    from app.limiter import reset_limits
+    reset_limits()
+    yield
+    reset_limits()
+
+
 # ── Dependency override ───────────────────────────────────────────────────────
 
 def _override_get_db():
