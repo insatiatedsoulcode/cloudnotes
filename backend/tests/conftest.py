@@ -98,13 +98,25 @@ def reset_rate_limiter():
 @pytest.fixture(autouse=True)
 def mock_email():
     """
-    Suppress real SMTP calls in every test.
+    Suppress real verification SMTP calls in every test.
 
     Patches send_verification_email at the call site (app.routers.auth).
     Tests that need to capture the token read:
         mock_email.call_args.kwargs["token"]
     """
     with patch("app.routers.auth.send_verification_email") as mock_fn:
+        yield mock_fn
+
+
+@pytest.fixture(autouse=True)
+def mock_password_reset_email():
+    """
+    Suppress real password-reset SMTP calls in every test.
+
+    Tests that need to capture the reset token read:
+        mock_password_reset_email.call_args.kwargs["token"]
+    """
+    with patch("app.routers.auth.send_password_reset_email") as mock_fn:
         yield mock_fn
 
 

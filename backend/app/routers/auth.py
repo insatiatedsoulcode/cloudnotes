@@ -6,21 +6,34 @@ from jose import jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
+from app.cache import get_redis
 from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.email import generate_token, hash_token, send_verification_email
+from app.email import (
+    generate_token,
+    hash_token,
+    send_password_reset_email,
+    send_verification_email,
+)
 from app.limiter import limiter
 from app.logger import get_logger
 from app.models.email_verification import EmailVerification
 from app.models.user import User
-from app.schemas.user import Token, UserCreate, UserResponse
+from app.schemas.user import (
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    Token,
+    UserCreate,
+    UserResponse,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = get_logger("auth")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 _VERIFY_TOKEN_TTL_HOURS = 24
+_RESET_TOKEN_TTL_SECONDS = 3600  # 1 hour
 
 
 def _hash(password: str) -> str:
@@ -129,3 +142,63 @@ def resend_verification(
 
     log.info("RESEND-VERIFY  user_id=%d", current_user.id)
     return {"message": "Verification email resent. Check your inbox."}
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/hour")
+def forgot_password(
+    request: Request,
+    data: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Send a password reset email.
+
+    Always returns 200 regardless of whether the email is registered —
+    this prevents user enumeration (attacker cannot learn which emails exist).
+    """
+    user = db.query(User).filter(User.email == data.email).first()
+    if user:
+        raw, hashed = generate_token()
+        get_redis().setex(f"pwd_reset:{hashed}", _RESET_TOKEN_TTL_SECONDS, str(user.id))
+        send_password_reset_email(to=user.email, token=raw)
+        log.info("FORGOT-PASSWORD  user_id=%d  email=%s", user.id, user.email)
+    else:
+        log.info("FORGOT-PASSWORD  email=%s  not_found=true", data.email)
+
+    return {"message": "If that email exists, a reset link has been sent"}
+
+
+@router.post("/reset-password")
+@limiter.limit("5/hour")
+def reset_password(
+    request: Request,
+    data: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Consume a reset token and update the password.
+
+    Token is deleted from Redis immediately after use (single-use guarantee).
+    Existing JWT sessions remain valid — F-07 (refresh tokens) will add
+    session revocation on password change.
+    """
+    token_hash = hash_token(data.token)
+    redis = get_redis()
+    user_id_str = redis.get(f"pwd_reset:{token_hash}")
+
+    if not user_id_str:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = db.query(User).filter(User.id == int(user_id_str)).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user.password_hash = _hash(data.new_password)
+    db.commit()
+
+    # Single-use: burn the token immediately so the link cannot be reused
+    redis.delete(f"pwd_reset:{token_hash}")
+
+    log.info("RESET-PASSWORD  user_id=%d", user.id)
+    return {"message": "Password reset successfully. You can now log in with your new password."}
