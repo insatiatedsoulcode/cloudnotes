@@ -24,6 +24,30 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserProfile(BaseModel):
+    """Richer response used by /api/users/me — includes is_active."""
+    id: int
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class UserUpdate(BaseModel):
+    """Change password. Email change requires verification (F-05)."""
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("New password must be at least 8 characters")
+        return v
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

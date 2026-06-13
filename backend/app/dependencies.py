@@ -50,8 +50,13 @@ def get_current_user(
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise exc
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account suspended",
+        )
 
-    log.debug("AUTH  user_id=%d  role=%s", user.id, user.role)
+    log.debug("AUTH  user_id=%d  role=%s  active=%s", user.id, user.role, user.is_active)
     return user
 
 

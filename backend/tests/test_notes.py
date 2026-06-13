@@ -58,11 +58,17 @@ class TestListNotes:
         titles = [n["title"] for n in client.get("/api/notes/", headers=auth_headers).json()]
         assert titles == ["Second", "First"]
 
-    def test_all_users_can_list_all_notes(self, client, auth_headers, second_user_headers):
-        """Notes are not scoped to owner for listing — everyone sees all."""
-        make_note(client, auth_headers, title="User1 note")
-        res = client.get("/api/notes/", headers=second_user_headers)
+    def test_user_sees_own_private_notes(self, client, auth_headers):
+        """Owner always sees their own private notes."""
+        make_note(client, auth_headers, title="My private note")
+        res = client.get("/api/notes/", headers=auth_headers)
         assert len(res.json()) == 1
+
+    def test_private_notes_not_visible_to_other_users(self, client, auth_headers, second_user_headers):
+        """Private notes (default) must NOT appear in another user's list."""
+        make_note(client, auth_headers, title="User1 private note")
+        res = client.get("/api/notes/", headers=second_user_headers)
+        assert len(res.json()) == 0
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -121,10 +127,15 @@ class TestGetNote:
         res = client.get("/api/notes/9999", headers=auth_headers)
         assert res.status_code == 404
 
-    def test_any_authenticated_user_can_get_any_note(self, client, auth_headers, second_user_headers):
+    def test_owner_can_get_own_private_note(self, client, auth_headers):
         note = make_note(client, auth_headers)
-        res = client.get(f"/api/notes/{note['id']}", headers=second_user_headers)
+        res = client.get(f"/api/notes/{note['id']}", headers=auth_headers)
         assert res.status_code == 200
+
+    def test_other_user_cannot_get_private_note(self, client, auth_headers, second_user_headers):
+        note = make_note(client, auth_headers)  # private by default
+        res = client.get(f"/api/notes/{note['id']}", headers=second_user_headers)
+        assert res.status_code == 403
 
 
 # ── Update ────────────────────────────────────────────────────────────────────

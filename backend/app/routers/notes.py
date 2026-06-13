@@ -1,6 +1,7 @@
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.cache import (
@@ -33,12 +34,19 @@ def _check_ownership(note: Note, user: User) -> None:
         raise HTTPException(status_code=403, detail="You don't own this note")
 
 
+def _check_read_access(note_data: dict, user: User) -> None:
+    """Raise 403 if a private note is accessed by a non-owner non-admin."""
+    if note_data.get("visibility") == "private":
+        if note_data.get("owner_id") != user.id and user.role != "admin":
+            raise HTTPException(status_code=403, detail="This note is private")
+
+
 def _serialize_note(note: Note) -> dict:
     """Convert ORM Note → JSON-safe dict via Pydantic (handles datetime → ISO string)."""
     return NoteResponse.model_validate(note).model_dump(mode="json")
 
 
-# ── List ──────────────────────────────────────────────────────────────────────
+# ── List (scoped) ─────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[NoteResponse])
 def list_notes(
@@ -47,7 +55,8 @@ def list_notes(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    cache_key = f"notes:list:{skip}:{limit}"
+    # Cache key is per-user: admins see all notes, regular users see a subset.
+    cache_key = f"notes:list:{current_user.id}:{skip}:{limit}"
     log.info("LIST  user_id=%d  skip=%d  limit=%d", current_user.id, skip, limit)
 
     cached = cache_get(cache_key)
@@ -55,7 +64,14 @@ def list_notes(
         log.info("LIST  → cache hit  count=%d", len(cached))
         return cached
 
-    notes = db.query(Note).order_by(Note.created_at.desc()).offset(skip).limit(limit).all()
+    query = db.query(Note).order_by(Note.created_at.desc())
+    if current_user.role != "admin":
+        # Regular users see their own notes + everyone's public notes
+        query = query.filter(
+            or_(Note.owner_id == current_user.id, Note.visibility == "public")
+        )
+    notes = query.offset(skip).limit(limit).all()
+
     data = [_serialize_note(n) for n in notes]
     cache_set(cache_key, data, NOTES_LIST_TTL)
     log.info("LIST  → db hit  count=%d  cached for %ds", len(data), NOTES_LIST_TTL)
@@ -72,24 +88,26 @@ def create_note(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    log.info("CREATE  user_id=%d  title=%r  content_len=%d", current_user.id, note.title, len(note.content))
+    log.info(
+        "CREATE  user_id=%d  title=%r  visibility=%s",
+        current_user.id, note.title, note.visibility,
+    )
     db_note = Note(
         title=note.title,
         content=note.content,
         author=current_user.email,
         owner_id=current_user.id,
+        visibility=note.visibility,
     )
     db.add(db_note)
     db.commit()
     db.refresh(db_note)
-
-    # A new note means all list caches are stale — evict them.
     cache_delete_pattern("notes:list:*")
     log.info("CREATE  → id=%d  list cache invalidated", db_note.id)
     return db_note
 
 
-# ── Get ───────────────────────────────────────────────────────────────────────
+# ── Get (visibility-aware) ────────────────────────────────────────────────────
 
 @router.get("/{note_id}", response_model=NoteResponse)
 def get_note(
@@ -102,6 +120,9 @@ def get_note(
 
     cached = cache_get(cache_key)
     if cached is not None:
+        # Access control must be re-checked even on cache hits —
+        # visibility or ownership may have changed since the key was written.
+        _check_read_access(cached, current_user)
         log.info("GET  note_id=%d  → cache hit", note_id)
         return cached
 
@@ -111,8 +132,10 @@ def get_note(
         raise HTTPException(status_code=404, detail="Note not found")
 
     data = _serialize_note(note)
+    _check_read_access(data, current_user)
+
     cache_set(cache_key, data, NOTES_DETAIL_TTL)
-    log.info("GET  note_id=%d  → db hit  title=%r  cached for %ds", note_id, note.title, NOTES_DETAIL_TTL)
+    log.info("GET  note_id=%d  → db hit  title=%r", note_id, note.title)
     return data
 
 
@@ -137,10 +160,9 @@ def update_note(
         setattr(note, field, value)
     db.commit()
     db.refresh(note)
-
     cache_delete(f"notes:detail:{note_id}")
     cache_delete_pattern("notes:list:*")
-    log.info("UPDATE  note_id=%d  → cache invalidated  updated_at=%s", note_id, note.updated_at)
+    log.info("UPDATE  note_id=%d  → cache invalidated", note_id)
     return note
 
 
@@ -161,7 +183,6 @@ def delete_note(
     _check_ownership(note, current_user)
     db.delete(note)
     db.commit()
-
     cache_delete(f"notes:detail:{note_id}")
     cache_delete_pattern("notes:list:*")
-    log.info("DELETE  note_id=%d  → cache invalidated  title=%r", note_id, note.title)
+    log.info("DELETE  note_id=%d  → cache invalidated", note_id)

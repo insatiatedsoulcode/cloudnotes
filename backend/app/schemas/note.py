@@ -1,13 +1,15 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, field_validator
+
+_VALID_VISIBILITY = ("private", "public")
 
 
 class NoteCreate(BaseModel):
     title: str
     content: str
-    # author is now set server-side from the JWT user's email, not submitted by client
+    visibility: Literal["private", "public"] = "private"
 
     @field_validator("title", "content")
     @classmethod
@@ -20,6 +22,7 @@ class NoteCreate(BaseModel):
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
+    visibility: Optional[Literal["private", "public"]] = None
 
 
 class NoteResponse(BaseModel):
@@ -28,6 +31,7 @@ class NoteResponse(BaseModel):
     content: str
     author: str
     owner_id: Optional[int]
+    visibility: str
     created_at: datetime
     updated_at: datetime
 

@@ -23,7 +23,7 @@ class TestListCache:
         fake_redis.flushall()
 
         client.get("/api/notes/", headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 1
+        assert len(fake_redis.keys("notes:list:*")) > 0
 
     def test_second_list_request_is_a_cache_hit(self, client, auth_headers, fake_redis):
         """Second GET /notes/ must return the same data as the first."""
@@ -44,13 +44,13 @@ class TestListCache:
 
         # Populate cache
         client.get("/api/notes/", headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 1
+        assert len(fake_redis.keys("notes:list:*")) > 0
 
         # Write should evict
         client.post("/api/notes/",
                     json={"title": "New note", "content": "body"},
                     headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 0
+        assert len(fake_redis.keys("notes:list:*")) == 0
 
     def test_delete_invalidates_list_cache(self, client, auth_headers, fake_redis):
         """DELETE /notes/{id} must evict all notes:list:* keys."""
@@ -58,10 +58,10 @@ class TestListCache:
         fake_redis.flushall()
 
         client.get("/api/notes/", headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 1
+        assert len(fake_redis.keys("notes:list:*")) > 0
 
         client.delete(f"/api/notes/{note['id']}", headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 0
+        assert len(fake_redis.keys("notes:list:*")) == 0
 
     def test_update_invalidates_list_cache(self, client, auth_headers, fake_redis):
         """PUT /notes/{id} must evict all notes:list:* keys."""
@@ -69,12 +69,12 @@ class TestListCache:
         fake_redis.flushall()
 
         client.get("/api/notes/", headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 1
+        assert len(fake_redis.keys("notes:list:*")) > 0
 
         client.put(f"/api/notes/{note['id']}",
                    json={"title": "Updated"},
                    headers=auth_headers)
-        assert fake_redis.exists("notes:list:0:100") == 0
+        assert len(fake_redis.keys("notes:list:*")) == 0
 
     def test_cache_returns_fresh_data_after_invalidation(self, client, auth_headers, fake_redis):
         """After create + next GET, the list must include the new note."""
