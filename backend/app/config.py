@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     SECRET_KEY: str = "change-me-in-production"
     JWT_EXPIRE_MINUTES: int = 60
+    REDIS_URL: str = "redis://localhost:6379"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

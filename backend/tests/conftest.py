@@ -15,6 +15,9 @@ import os
 os.environ.setdefault("DATABASE_URL", "postgresql://deepakkumarsingh@localhost:5432/cloudnotes")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("APP_ENV", "test")
+# "memory://" tells slowapi to use in-memory rate limit storage (no real Redis needed).
+# The cache layer is independently mocked with fakeredis via the fake_redis fixture.
+os.environ.setdefault("REDIS_URL", "memory://")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -51,6 +54,29 @@ def clean_tables(create_tables):
     with _engine.connect() as conn:
         conn.execute(text("TRUNCATE TABLE notes, users RESTART IDENTITY CASCADE"))
         conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def fake_redis():
+    """
+    Replace the Redis cache client with fakeredis for every test.
+
+    Why fakeredis?
+    - No real Redis server needed in CI or when running tests offline.
+    - Each test gets a fresh, empty store (flushall after yield).
+    - Deterministic: no TTL races, no cross-test key bleed.
+
+    How it works:
+    - app/cache.py exposes override_for_testing() to swap the client.
+    - fakeredis.FakeRedis is a pure-Python in-process Redis clone.
+    """
+    import fakeredis
+    from app.cache import override_for_testing
+    fake = fakeredis.FakeRedis(decode_responses=True)
+    override_for_testing(fake)
+    yield fake
+    fake.flushall()
+    override_for_testing(None)
 
 
 @pytest.fixture(autouse=True)
