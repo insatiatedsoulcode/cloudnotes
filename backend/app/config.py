@@ -5,7 +5,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:postgres@db:5432/cloudnotes"
     APP_ENV: str = "development"
     SECRET_KEY: str = "change-me-in-production"
-    JWT_EXPIRE_MINUTES: int = 60
+    JWT_EXPIRE_MINUTES: int = 15           # access token — short-lived, not revocable
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30   # refresh token — long-lived, stored in DB
     REDIS_URL: str = "redis://localhost:6379"
 
     # Email / SMTP — defaults match MailHog (local dev mock)

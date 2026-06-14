@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
 from passlib.context import CryptContext
@@ -19,6 +19,7 @@ from app.email import (
 from app.limiter import limiter
 from app.logger import get_logger
 from app.models.email_verification import EmailVerification
+from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.user import (
     ForgotPasswordRequest,
@@ -36,6 +37,8 @@ _VERIFY_TOKEN_TTL_HOURS = 24
 _RESET_TOKEN_TTL_SECONDS = 3600  # 1 hour
 
 
+# ── Password helpers ──────────────────────────────────────────────────────────
+
 def _hash(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -44,14 +47,67 @@ def _verify(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
-def _make_token(user_id: int) -> str:
+# ── JWT access token ──────────────────────────────────────────────────────────
+
+def _make_access_token(user_id: int) -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
     # JWT spec (RFC 7519) requires sub to be a string
     return jwt.encode({"sub": str(user_id), "exp": expire}, settings.SECRET_KEY, algorithm="HS256")
 
 
+# ── Refresh token helpers ─────────────────────────────────────────────────────
+
+def _issue_refresh_token(user_id: int, db: Session) -> str:
+    """Persist a new RefreshToken row and return the raw token to set in the cookie."""
+    raw, hashed = generate_token()
+    rt = RefreshToken(
+        user_id=user_id,
+        token_hash=hashed,
+        expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    db.add(rt)
+    db.commit()
+    return raw
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    """Set an HTTP-only refresh token cookie.
+
+    HTTP-only: JavaScript cannot read it → XSS cannot steal it.
+    path=/api/auth: the cookie is only sent to the auth sub-tree,
+                    never to /api/notes/ or other endpoints.
+    secure=True only in production (HTTPS required); off in dev/test (HTTP).
+    """
+    response.set_cookie(
+        "refresh_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.APP_ENV == "production",
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+        path="/api/auth",
+    )
+
+
+def _revoke_all_refresh_tokens(user_id: int, db: Session) -> None:
+    """Revoke every active refresh token for a user.
+
+    Called on:
+    - Token reuse detected (breach response — nuke all sessions)
+    - Password reset (prevents attacker who has a refresh token from staying in)
+    - Password change (same reason)
+    """
+    db.query(RefreshToken).filter(
+        RefreshToken.user_id == user_id,
+        RefreshToken.revoked == False,  # noqa: E712
+    ).update({"revoked": True})
+    db.commit()
+
+
+# ── Email verification helpers ────────────────────────────────────────────────
+
 def _issue_verification(user_id: int, db: Session) -> str:
-    """Invalidate old tokens, create a fresh one, and return the raw token to email."""
+    """Invalidate old email-verification tokens, create a fresh one, return raw token."""
     db.query(EmailVerification).filter(
         EmailVerification.user_id == user_id,
         EmailVerification.used == False,  # noqa: E712
@@ -67,6 +123,8 @@ def _issue_verification(user_id: int, db: Session) -> str:
     db.commit()
     return raw
 
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 @limiter.limit("3/minute")
@@ -88,25 +146,107 @@ def register(request: Request, data: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 @limiter.limit("5/minute")
-def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    request: Request,
+    response: Response,
+    form: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
     """
-    Login uses OAuth2 form fields (username + password), not JSON.
-    This is the OAuth2 password flow spec — 'username' field contains the email.
-    FastAPI's Swagger UI /docs handles this automatically.
+    Login with email + password.  Returns a short-lived access token (JSON) and
+    sets a long-lived refresh token in an HTTP-only cookie.
+
+    OAuth2 password flow: 'username' field carries the email address.
+    FastAPI Swagger UI (/docs) handles this automatically.
     """
     log.info("LOGIN  email=%s", form.username)
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not _verify(form.password, user.password_hash):
-        log.warning("LOGIN  failed  email=%s", form.username)
+        log.warning("LOGIN failed  email=%s", form.username)
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = _make_token(user.id)
-    log.info("LOGIN  → id=%d  role=%s  token_issued=yes", user.id, user.role)
-    return {"access_token": token}
+
+    access_token = _make_access_token(user.id)
+    raw_refresh = _issue_refresh_token(user.id, db)
+    _set_refresh_cookie(response, raw_refresh)
+
+    log.info("LOGIN  → id=%d  role=%s  tokens_issued=yes", user.id, user.role)
+    return {"access_token": access_token}
+
+
+@router.post("/refresh", response_model=Token)
+def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
+    """
+    Rotate the refresh token and issue a new access token.
+
+    Reads the refresh token from the HTTP-only cookie (never from a body field).
+    On success: old token revoked, new token pair issued.
+    On reuse of an already-revoked token: entire session family revoked (breach response).
+    """
+    raw = request.cookies.get("refresh_token")
+    if not raw:
+        raise HTTPException(status_code=401, detail="No refresh token provided")
+
+    token_hash = hash_token(raw)
+    rt = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
+
+    if rt is None:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    if rt.revoked:
+        # A revoked token is being replayed — possible theft.  Nuke all sessions.
+        log.warning("REFRESH REUSE DETECTED  user_id=%d  → revoking all sessions", rt.user_id)
+        _revoke_all_refresh_tokens(rt.user_id, db)
+        response.delete_cookie("refresh_token", path="/api/auth")
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token already used. All sessions have been revoked for your safety.",
+        )
+
+    if rt.expires_at < datetime.utcnow():
+        rt.revoked = True
+        db.commit()
+        raise HTTPException(status_code=401, detail="Refresh token expired. Please log in again.")
+
+    user = db.query(User).filter(User.id == rt.user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Account suspended")
+
+    # Rotate: revoke the old token, issue a new pair
+    rt.revoked = True
+    db.commit()
+
+    access_token = _make_access_token(user.id)
+    raw_new = _issue_refresh_token(user.id, db)
+    _set_refresh_cookie(response, raw_new)
+
+    log.info("REFRESH  user_id=%d  → rotated", user.id)
+    return {"access_token": access_token}
+
+
+@router.post("/logout", status_code=204)
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """
+    True server-side logout: revoke the refresh token in DB and clear the cookie.
+
+    The current access token remains valid until its 15-minute TTL expires —
+    this is acceptable given the short window.  F-07 does not implement an
+    access token blacklist (that would require a Redis lookup on every request).
+    """
+    raw = request.cookies.get("refresh_token")
+    if raw:
+        token_hash = hash_token(raw)
+        rt = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash).first()
+        if rt and not rt.revoked:
+            rt.revoked = True
+            db.commit()
+            log.info("LOGOUT  → refresh token revoked")
+
+    response.delete_cookie("refresh_token", path="/api/auth")
 
 
 @router.get("/verify")
 def verify_email(token: str, db: Session = Depends(get_db)):
-    """Consume a verification token and mark the account as verified."""
+    """Consume an email verification token and mark the account as verified."""
     token_hash = hash_token(token)
     verification = db.query(EmailVerification).filter(
         EmailVerification.token_hash == token_hash,
@@ -179,9 +319,8 @@ def reset_password(
     """
     Consume a reset token and update the password.
 
-    Token is deleted from Redis immediately after use (single-use guarantee).
-    Existing JWT sessions remain valid — F-07 (refresh tokens) will add
-    session revocation on password change.
+    Revokes all refresh tokens on success so stolen sessions cannot persist
+    after a password change.  Token is single-use (deleted from Redis immediately).
     """
     token_hash = hash_token(data.token)
     redis = get_redis()
@@ -197,8 +336,8 @@ def reset_password(
     user.password_hash = _hash(data.new_password)
     db.commit()
 
-    # Single-use: burn the token immediately so the link cannot be reused
     redis.delete(f"pwd_reset:{token_hash}")
+    _revoke_all_refresh_tokens(user.id, db)
 
-    log.info("RESET-PASSWORD  user_id=%d", user.id)
+    log.info("RESET-PASSWORD  user_id=%d  → refresh tokens revoked", user.id)
     return {"message": "Password reset successfully. You can now log in with your new password."}

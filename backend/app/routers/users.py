@@ -13,7 +13,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.logger import get_logger
 from app.models.user import User
-from app.routers.auth import _hash, _verify
+from app.routers.auth import _hash, _revoke_all_refresh_tokens, _verify
 from app.schemas.user import UserProfile, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -37,8 +37,10 @@ def update_my_profile(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     current_user.password_hash = _hash(data.new_password)
     db.commit()
+    # Revoke all refresh tokens so sessions using the old password cannot persist
+    _revoke_all_refresh_tokens(current_user.id, db)
     db.refresh(current_user)
-    log.info("PROFILE UPDATE  user_id=%d  → password changed", current_user.id)
+    log.info("PROFILE UPDATE  user_id=%d  → password changed  refresh_tokens_revoked=yes", current_user.id)
     return current_user
 
 
