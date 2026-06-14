@@ -13,7 +13,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.config import settings
 from app.limiter import limiter, rate_limit_exceeded_handler
 from app.logger import get_logger, setup_logging
-from app.routers import admin, attachments, auth, notes, sharing, users
+from app.routers import admin, attachments, auth, notes, sharing, tags, users
 
 setup_logging()
 log = get_logger("app")
@@ -62,6 +62,7 @@ app.include_router(notes.router, prefix="/api")
 app.include_router(sharing.router, prefix="/api")
 app.include_router(attachments.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(tags.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 
 # Serve uploaded files as static assets.

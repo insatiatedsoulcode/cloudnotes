@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
 
 from app.database import Base
 
@@ -23,6 +23,9 @@ class Note(Base):
     # All normal queries must filter WHERE deleted_at IS NULL.
     # Hard delete (and cascade to shares/links/attachments) happens via a scheduled job (F-12).
     deleted_at = Column(DateTime, nullable=True, default=None)
+    # Free-form tags stored as a PostgreSQL TEXT[] array.  GIN index (see migration)
+    # enables fast `@>` (contains) queries.  Normalised to lowercase at write time.
+    tags = Column(ARRAY(String), nullable=False, server_default="{}")
     # Maintained by a DB trigger (notes_search_vector_trigger) on INSERT/UPDATE.
     # title weighted A (higher), content weighted B — ts_rank respects this ordering.
     search_vector = Column(TSVECTOR, nullable=True)

@@ -246,12 +246,11 @@ def db_session():
         db.close()
 
 
-def make_note(client, headers, title="Test note", content="Test content", visibility="private"):
+def make_note(client, headers, title="Test note", content="Test content", visibility="private", tags=None):
     """Create a note via the API and return the response JSON."""
-    res = client.post(
-        "/api/notes/",
-        json={"title": title, "content": content, "visibility": visibility},
-        headers=headers,
-    )
+    body = {"title": title, "content": content, "visibility": visibility}
+    if tags is not None:
+        body["tags"] = tags
+    res = client.post("/api/notes/", json=body, headers=headers)
     assert res.status_code == 201, res.json()
     return res.json()

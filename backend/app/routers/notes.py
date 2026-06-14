@@ -79,6 +79,7 @@ def list_notes(
     skip: int = 0,
     limit: int = 100,
     q: Optional[str] = None,
+    tag: Optional[str] = None,
     sort: str = "created_at",
     order: str = "desc",
     date_from: Optional[date] = Query(None, alias="from"),
@@ -89,6 +90,7 @@ def list_notes(
 ) -> Any:
     # Normalize params — unknown values fall back to safe defaults.
     q = q.strip() if q else None
+    tag = tag.strip().lower() if tag else None
     if sort not in ("created_at", "updated_at", "rank"):
         sort = "created_at"
     if order not in ("asc", "desc"):
@@ -102,7 +104,7 @@ def list_notes(
     )
 
     # Only cache plain listing requests — search/filter results are too dynamic.
-    use_cache = not any([q, date_from, date_to, visibility])
+    use_cache = not any([q, tag, date_from, date_to, visibility])
     if use_cache:
         cache_key = f"notes:list:{current_user.id}:{skip}:{limit}:{sort}:{order}"
         cached = cache_get(cache_key)
@@ -131,6 +133,10 @@ def list_notes(
     if q:
         ts_query = func.plainto_tsquery("english", q)
         query = query.filter(Note.search_vector.op("@@")(ts_query))
+
+    # Tag filter — uses GIN index via the @> (array-contains) operator.
+    if tag:
+        query = query.filter(Note.tags.contains([tag]))
 
     # Date range filter (inclusive on both ends, full-day granularity).
     if date_from:
@@ -193,12 +199,13 @@ def create_note(
         author=current_user.email,
         owner_id=current_user.id,
         visibility=note.visibility,
+        tags=note.tags,
     )
     db.add(db_note)
     db.flush()   # assigns db_note.id from the sequence before commit
     log_action(db, action="note_create", user_id=current_user.id, resource_type="note",
                resource_id=db_note.id,
-               details={"title": note.title, "visibility": note.visibility})
+               details={"title": note.title, "visibility": note.visibility, "tags": note.tags})
     db.commit()
     db.refresh(db_note)
     cache_delete_pattern("notes:list:*")
