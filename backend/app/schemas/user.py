@@ -8,11 +8,23 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
 
+    @field_validator("email")
+    @classmethod
+    def email_max_length(cls, v: str) -> str:
+        if len(v) > 255:
+            raise ValueError("Email must not exceed 255 characters")
+        return v
+
     @field_validator("password")
     @classmethod
-    def password_min_length(cls, v: str) -> str:
+    def password_length(cls, v: str) -> str:
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
+        # bcrypt silently truncates passwords longer than 72 bytes, making very long
+        # passwords weaker than they appear. Cap at 128 characters to prevent this
+        # confusion and defend against bcrypt DoS on some implementations.
+        if len(v) > 128:
+            raise ValueError("Password must not exceed 128 characters")
         return v
 
 
@@ -63,9 +75,11 @@ class UserUpdate(BaseModel):
 
     @field_validator("new_password")
     @classmethod
-    def new_password_min_length(cls, v: str) -> str:
+    def new_password_length(cls, v: str) -> str:
         if len(v) < 8:
             raise ValueError("New password must be at least 8 characters")
+        if len(v) > 128:
+            raise ValueError("New password must not exceed 128 characters")
         return v
 
 
@@ -94,7 +108,9 @@ class ResetPasswordRequest(BaseModel):
 
     @field_validator("new_password")
     @classmethod
-    def new_password_min_length(cls, v: str) -> str:
+    def new_password_length(cls, v: str) -> str:
         if len(v) < 8:
             raise ValueError("New password must be at least 8 characters")
+        if len(v) > 128:
+            raise ValueError("New password must not exceed 128 characters")
         return v
