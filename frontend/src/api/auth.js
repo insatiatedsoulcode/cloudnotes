@@ -29,4 +29,14 @@ export const authApi = {
     console.log("%c[Auth] LOGIN → token received", "color: #276749");
     return data; // { access_token, token_type }
   },
+
+  devResetPassword: async (email, newPassword) => {
+    console.log("%c[Auth] DEV-RESET-PASSWORD", "color: #805ad5; font-weight: bold", { email });
+    const params = new URLSearchParams({ email, new_password: newPassword });
+    const res = await fetch(`${BASE}/auth/dev-reset-password?${params}`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    console.log("%c[Auth] DEV-RESET-PASSWORD → success", "color: #276749");
+    return data;
+  },
 };

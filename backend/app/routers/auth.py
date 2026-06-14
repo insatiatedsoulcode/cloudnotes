@@ -183,6 +183,26 @@ def dev_verify(email: str, db: Session = Depends(get_db)):
     return {"verified": True, "email": email}
 
 
+@router.post("/dev-reset-password", status_code=200, include_in_schema=False)
+def dev_reset_password(email: str, new_password: str, db: Session = Depends(get_db)):
+    """Directly reset a password in dev/local mode — no email token needed.
+    Only active when AUTO_VERIFY_EMAILS=true — returns 404 in production."""
+    if not settings.AUTO_VERIFY_EMAILS:
+        raise HTTPException(status_code=404, detail="Not found")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    if len(new_password) > 128:
+        raise HTTPException(status_code=422, detail="Password must not exceed 128 characters")
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found with that email")
+    user.password_hash = _hash(new_password)
+    _revoke_all_refresh_tokens(user.id, db)
+    db.commit()
+    log.info("DEV-RESET-PASSWORD  email=%s", email)
+    return {"reset": True, "email": email}
+
+
 @router.post("/login", response_model=Token)
 @limiter.limit("5/minute")
 def login(
