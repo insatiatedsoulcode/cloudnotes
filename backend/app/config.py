@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = "noreply@cloudnotes.local"
     APP_BASE_URL: str = "http://localhost:8000"
 
+    # File storage — swap to "s3" when ready (F-10b)
+    STORAGE_BACKEND: str = "local"
+    UPLOADS_DIR: str = "./uploads"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
