@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import TSVECTOR
 
 from app.database import Base
 
@@ -18,3 +19,6 @@ class Note(Base):
     visibility = Column(String(10), nullable=False, default="private")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    # Maintained by a DB trigger (notes_search_vector_trigger) on INSERT/UPDATE.
+    # title weighted A (higher), content weighted B — ts_rank respects this ordering.
+    search_vector = Column(TSVECTOR, nullable=True)

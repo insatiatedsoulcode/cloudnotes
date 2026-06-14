@@ -1,7 +1,8 @@
-from typing import Any, List
+from datetime import date, datetime, timedelta
+from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.cache import (
@@ -52,29 +53,82 @@ def _serialize_note(note: Note) -> dict:
 def list_notes(
     skip: int = 0,
     limit: int = 100,
+    q: Optional[str] = None,
+    sort: str = "created_at",
+    order: str = "desc",
+    date_from: Optional[date] = Query(None, alias="from"),
+    date_to: Optional[date] = Query(None, alias="to"),
+    visibility: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    # Cache key is per-user: admins see all notes, regular users see a subset.
-    cache_key = f"notes:list:{current_user.id}:{skip}:{limit}"
-    log.info("LIST  user_id=%d  skip=%d  limit=%d", current_user.id, skip, limit)
+    # Normalize params — unknown values fall back to safe defaults.
+    q = q.strip() if q else None
+    if sort not in ("created_at", "updated_at", "rank"):
+        sort = "created_at"
+    if order not in ("asc", "desc"):
+        order = "desc"
+    if sort == "rank" and not q:
+        sort = "created_at"
 
-    cached = cache_get(cache_key)
-    if cached is not None:
-        log.info("LIST  → cache hit  count=%d", len(cached))
-        return cached
+    log.info(
+        "LIST  user_id=%d  skip=%d  limit=%d  q=%r  sort=%s  order=%s",
+        current_user.id, skip, limit, q, sort, order,
+    )
 
-    query = db.query(Note).order_by(Note.created_at.desc())
+    # Only cache plain listing requests — search/filter results are too dynamic.
+    use_cache = not any([q, date_from, date_to, visibility])
+    if use_cache:
+        cache_key = f"notes:list:{current_user.id}:{skip}:{limit}:{sort}:{order}"
+        cached = cache_get(cache_key)
+        if cached is not None:
+            log.info("LIST  → cache hit  count=%d", len(cached))
+            return cached
+
+    query = db.query(Note)
+
+    # Scope: admins see everything; regular users see own + public.
     if current_user.role != "admin":
-        # Regular users see their own notes + everyone's public notes
         query = query.filter(
             or_(Note.owner_id == current_user.id, Note.visibility == "public")
         )
-    notes = query.offset(skip).limit(limit).all()
 
+    # Full-text search filter.
+    if q:
+        ts_query = func.plainto_tsquery("english", q)
+        query = query.filter(Note.search_vector.op("@@")(ts_query))
+
+    # Date range filter (inclusive on both ends, full-day granularity).
+    if date_from:
+        query = query.filter(
+            Note.created_at >= datetime(date_from.year, date_from.month, date_from.day)
+        )
+    if date_to:
+        query = query.filter(
+            Note.created_at < datetime(date_to.year, date_to.month, date_to.day) + timedelta(days=1)
+        )
+
+    # Visibility filter (stacks on top of access-control scope above).
+    if visibility in ("public", "private"):
+        query = query.filter(Note.visibility == visibility)
+
+    # Sort.
+    if sort == "rank":
+        rank_expr = func.ts_rank(Note.search_vector, func.plainto_tsquery("english", q))
+        query = query.order_by(rank_expr.desc() if order == "desc" else rank_expr.asc())
+    else:
+        sort_col = Note.updated_at if sort == "updated_at" else Note.created_at
+        query = query.order_by(sort_col.desc() if order == "desc" else sort_col.asc())
+
+    notes = query.offset(skip).limit(limit).all()
     data = [_serialize_note(n) for n in notes]
-    cache_set(cache_key, data, NOTES_LIST_TTL)
-    log.info("LIST  → db hit  count=%d  cached for %ds", len(data), NOTES_LIST_TTL)
+
+    if use_cache:
+        cache_set(cache_key, data, NOTES_LIST_TTL)
+        log.info("LIST  → db hit  count=%d  cached for %ds", len(data), NOTES_LIST_TTL)
+    else:
+        log.info("LIST  → db hit  count=%d  (no cache)", len(data))
+
     return data
 
 

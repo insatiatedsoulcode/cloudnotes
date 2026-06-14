@@ -39,8 +39,28 @@ _TestSession = sessionmaker(autocommit=False, autoflush=False, bind=_engine)
 
 @pytest.fixture(scope="session", autouse=True)
 def create_tables():
-    """Create all tables once for the whole test run."""
+    """Create all tables once for the whole test run, then install the FTS trigger."""
     Base.metadata.create_all(bind=_engine)
+    with _engine.connect() as conn:
+        conn.execute(text("""
+            CREATE OR REPLACE FUNCTION notes_search_vector_update() RETURNS trigger AS $$
+            BEGIN
+                NEW.search_vector :=
+                    setweight(to_tsvector('english', coalesce(NEW.title, '')), 'A') ||
+                    setweight(to_tsvector('english', coalesce(NEW.content, '')), 'B');
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+        """))
+        conn.execute(text("""
+            DROP TRIGGER IF EXISTS notes_search_vector_trigger ON notes
+        """))
+        conn.execute(text("""
+            CREATE TRIGGER notes_search_vector_trigger
+            BEFORE INSERT OR UPDATE ON notes
+            FOR EACH ROW EXECUTE FUNCTION notes_search_vector_update()
+        """))
+        conn.commit()
     yield
     Base.metadata.drop_all(bind=_engine)
 
@@ -216,8 +236,22 @@ def admin_headers(client):
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
 
 
-def make_note(client, headers, title="Test note", content="Test content"):
-    """Create a note and return the response JSON."""
-    res = client.post("/api/notes/", json={"title": title, "content": content}, headers=headers)
+@pytest.fixture
+def db_session():
+    """Direct DB session — for tests that need to insert rows with specific field values."""
+    db = _TestSession()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def make_note(client, headers, title="Test note", content="Test content", visibility="private"):
+    """Create a note via the API and return the response JSON."""
+    res = client.post(
+        "/api/notes/",
+        json={"title": title, "content": content, "visibility": visibility},
+        headers=headers,
+    )
     assert res.status_code == 201, res.json()
     return res.json()
