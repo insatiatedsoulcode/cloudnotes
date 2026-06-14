@@ -16,4 +16,8 @@ class RefreshToken(Base):
     # Revoked = consumed by rotation, explicit logout, or breach response.
     # Keeping revoked rows lets us detect token reuse (replaying an old rotated token).
     revoked = Column(Boolean, nullable=False, default=False)
+    # Session metadata — captured at issuance for the sessions list UI.
+    # Nullable so existing rows and proxy-less environments are handled gracefully.
+    ip_address = Column(String(45), nullable=True)   # IPv4 max 15, IPv6 max 39, +6 for port
+    user_agent = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

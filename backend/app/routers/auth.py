@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
@@ -24,6 +26,7 @@ from app.models.user import User
 from app.schemas.user import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    SessionResponse,
     Token,
     UserCreate,
     UserResponse,
@@ -57,13 +60,24 @@ def _make_access_token(user_id: int) -> str:
 
 # ── Refresh token helpers ─────────────────────────────────────────────────────
 
-def _issue_refresh_token(user_id: int, db: Session) -> str:
+def _client_ip(request: Request) -> str:
+    # X-Forwarded-For is set by load balancers / reverse proxies in production.
+    # The first IP in the comma-separated list is the original client.
+    fwd = request.headers.get("X-Forwarded-For")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _issue_refresh_token(user_id: int, db: Session, request: Request) -> str:
     """Persist a new RefreshToken row and return the raw token to set in the cookie."""
     raw, hashed = generate_token()
     rt = RefreshToken(
         user_id=user_id,
         token_hash=hashed,
         expires_at=datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("User-Agent", "")[:500],
     )
     db.add(rt)
     db.commit()
@@ -166,7 +180,7 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = _make_access_token(user.id)
-    raw_refresh = _issue_refresh_token(user.id, db)
+    raw_refresh = _issue_refresh_token(user.id, db, request)
     _set_refresh_cookie(response, raw_refresh)
 
     log.info("LOGIN  → id=%d  role=%s  tokens_issued=yes", user.id, user.role)
@@ -216,7 +230,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     db.commit()
 
     access_token = _make_access_token(user.id)
-    raw_new = _issue_refresh_token(user.id, db)
+    raw_new = _issue_refresh_token(user.id, db, request)
     _set_refresh_cookie(response, raw_new)
 
     log.info("REFRESH  user_id=%d  → rotated", user.id)
@@ -341,3 +355,78 @@ def reset_password(
 
     log.info("RESET-PASSWORD  user_id=%d  → refresh tokens revoked", user.id)
     return {"message": "Password reset successfully. You can now log in with your new password."}
+
+
+# ── Session management ────────────────────────────────────────────────────────
+
+@router.get("/sessions", response_model=List[SessionResponse])
+def list_sessions(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List all active sessions for the current user.
+
+    'Active' means: not revoked AND not past expires_at.
+    is_current=True marks the session whose refresh token cookie is in this request,
+    so a frontend can highlight "this device" without exposing token values.
+    """
+    current_cookie = request.cookies.get("refresh_token")
+    current_hash = hash_token(current_cookie) if current_cookie else None
+
+    rows = (
+        db.query(RefreshToken)
+        .filter(
+            RefreshToken.user_id == current_user.id,
+            RefreshToken.revoked == False,  # noqa: E712
+            RefreshToken.expires_at > datetime.utcnow(),
+        )
+        .order_by(RefreshToken.created_at.desc())
+        .all()
+    )
+
+    return [
+        SessionResponse(
+            id=r.id,
+            ip_address=r.ip_address,
+            user_agent=r.user_agent,
+            created_at=r.created_at,
+            expires_at=r.expires_at,
+            is_current=r.token_hash == current_hash,
+        )
+        for r in rows
+    ]
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def revoke_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Revoke a single session by ID.  Users can only revoke their own sessions."""
+    rt = db.query(RefreshToken).filter(
+        RefreshToken.id == session_id,
+        RefreshToken.user_id == current_user.id,
+        RefreshToken.revoked == False,  # noqa: E712
+    ).first()
+
+    if not rt:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    rt.revoked = True
+    db.commit()
+    log.info("SESSION REVOKE  user_id=%d  session_id=%d", current_user.id, session_id)
+
+
+@router.delete("/sessions", status_code=204)
+def revoke_all_sessions(
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Logout everywhere: revoke all active sessions and clear the current cookie."""
+    _revoke_all_refresh_tokens(current_user.id, db)
+    response.delete_cookie("refresh_token", path="/api/auth")
+    log.info("SESSION REVOKE ALL  user_id=%d", current_user.id)

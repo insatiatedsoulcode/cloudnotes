@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -53,6 +54,16 @@ class UserUpdate(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class SessionResponse(BaseModel):
+    """One active (non-revoked, non-expired) refresh token = one device/session."""
+    id: int
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    created_at: datetime
+    expires_at: datetime
+    is_current: bool = False  # True when this session's token matches the request cookie
 
 
 class ForgotPasswordRequest(BaseModel):

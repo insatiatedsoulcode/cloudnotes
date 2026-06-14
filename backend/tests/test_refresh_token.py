@@ -1,5 +1,5 @@
 """
-F-07 Refresh Token (Token Rotation) tests.
+F-07 Refresh Token (Token Rotation) + Session Management tests.
 
 Covers:
   - Login issues access token (JSON body) + refresh token (HTTP-only cookie)
@@ -11,6 +11,9 @@ Covers:
   - Suspended account cannot refresh
   - Password reset revokes all refresh tokens
   - Password change (PUT /users/me) revokes all refresh tokens
+  - GET /api/auth/sessions — lists active sessions with IP, UA, is_current
+  - DELETE /api/auth/sessions/{id} — revoke one session
+  - DELETE /api/auth/sessions — logout everywhere (revoke all)
 """
 
 import pytest
@@ -269,3 +272,181 @@ class TestPasswordRevokesTokens:
         # New refresh token works
         res = client.post("/api/auth/refresh", cookies={"refresh_token": new_refresh})
         assert res.status_code == 200
+
+
+# ── Session management ────────────────────────────────────────────────────────
+
+class TestSessionList:
+
+    def test_list_sessions_requires_auth(self, client):
+        res = client.get("/api/auth/sessions")
+        assert res.status_code == 401
+
+    def test_login_creates_one_session(self, client):
+        _register(client)
+        res_login = client.post("/api/auth/login",
+                                data={"username": "rt@test.com", "password": "Pass123!"})
+        access = res_login.json()["access_token"]
+
+        res = client.get("/api/auth/sessions", headers=_auth(access))
+        assert res.status_code == 200
+        assert len(res.json()) == 1
+
+    def test_two_logins_create_two_sessions(self, client):
+        _register(client)
+        client.post("/api/auth/login", data={"username": "rt@test.com", "password": "Pass123!"})
+        res2 = client.post("/api/auth/login", data={"username": "rt@test.com", "password": "Pass123!"})
+        access = res2.json()["access_token"]
+
+        sessions = client.get("/api/auth/sessions", headers=_auth(access)).json()
+        assert len(sessions) == 2
+
+    def test_session_response_has_expected_fields(self, client):
+        _register(client)
+        res_login = client.post("/api/auth/login",
+                                data={"username": "rt@test.com", "password": "Pass123!"})
+        access = res_login.json()["access_token"]
+
+        session = client.get("/api/auth/sessions", headers=_auth(access)).json()[0]
+        assert "id" in session
+        assert "created_at" in session
+        assert "expires_at" in session
+        assert "is_current" in session
+
+    def test_is_current_true_when_cookie_present(self, client):
+        _register(client)
+        # Login — keep cookie in jar this time (don't clear)
+        res_login = client.post("/api/auth/login",
+                                data={"username": "rt@test.com", "password": "Pass123!"})
+        access = res_login.json()["access_token"]
+        # Cookie is auto-stored in client jar; GET /sessions will send it
+        sessions = client.get("/api/auth/sessions", headers=_auth(access)).json()
+        assert any(s["is_current"] for s in sessions)
+
+    def test_is_current_false_without_cookie(self, client):
+        _register(client)
+        access, _ = _login(client)  # _login() clears the cookie jar
+        sessions = client.get("/api/auth/sessions", headers=_auth(access)).json()
+        assert not any(s["is_current"] for s in sessions)
+
+    def test_revoked_sessions_not_listed(self, client):
+        _register(client)
+        access, refresh = _login(client)
+
+        # Logout (revokes the token)
+        client.post("/api/auth/logout", cookies={"refresh_token": refresh})
+
+        sessions = client.get("/api/auth/sessions", headers=_auth(access)).json()
+        assert len(sessions) == 0
+
+    def test_only_own_sessions_listed(self, client):
+        """User A must never see User B's sessions."""
+        _register(client, email="user_a@test.com")
+        _register(client, email="user_b@test.com")
+
+        # Log in as both
+        r_a = client.post("/api/auth/login", data={"username": "user_a@test.com", "password": "Pass123!"})
+        r_b = client.post("/api/auth/login", data={"username": "user_b@test.com", "password": "Pass123!"})
+        access_a = r_a.json()["access_token"]
+        access_b = r_b.json()["access_token"]
+
+        sessions_a = client.get("/api/auth/sessions", headers=_auth(access_a)).json()
+        sessions_b = client.get("/api/auth/sessions", headers=_auth(access_b)).json()
+
+        # Each user sees exactly 1 session (their own)
+        assert len(sessions_a) == 1
+        assert len(sessions_b) == 1
+        assert sessions_a[0]["id"] != sessions_b[0]["id"]
+
+
+class TestRevokeSession:
+
+    def test_revoke_own_session_returns_204(self, client):
+        _register(client)
+        access, _ = _login(client)
+        session_id = client.get("/api/auth/sessions", headers=_auth(access)).json()[0]["id"]
+
+        res = client.delete(f"/api/auth/sessions/{session_id}", headers=_auth(access))
+        assert res.status_code == 204
+
+    def test_revoked_session_disappears_from_list(self, client):
+        _register(client)
+        access, _ = _login(client)
+        session_id = client.get("/api/auth/sessions", headers=_auth(access)).json()[0]["id"]
+
+        client.delete(f"/api/auth/sessions/{session_id}", headers=_auth(access))
+
+        sessions = client.get("/api/auth/sessions", headers=_auth(access)).json()
+        assert not any(s["id"] == session_id for s in sessions)
+
+    def test_revoke_another_users_session_returns_404(self, client):
+        _register(client, email="user_a@test.com")
+        _register(client, email="user_b@test.com")
+
+        r_a = client.post("/api/auth/login", data={"username": "user_a@test.com", "password": "Pass123!"})
+        r_b = client.post("/api/auth/login", data={"username": "user_b@test.com", "password": "Pass123!"})
+        access_a = r_a.json()["access_token"]
+        access_b = r_b.json()["access_token"]
+
+        # Get user_b's session id
+        session_b_id = client.get("/api/auth/sessions", headers=_auth(access_b)).json()[0]["id"]
+
+        # User A tries to revoke User B's session
+        res = client.delete(f"/api/auth/sessions/{session_b_id}", headers=_auth(access_a))
+        assert res.status_code == 404
+
+    def test_revoke_nonexistent_session_returns_404(self, client):
+        _register(client)
+        access, _ = _login(client)
+        res = client.delete("/api/auth/sessions/99999", headers=_auth(access))
+        assert res.status_code == 404
+
+    def test_refresh_fails_after_session_revoked(self, client):
+        _register(client)
+        access, refresh = _login(client)
+        session_id = client.get("/api/auth/sessions", headers=_auth(access)).json()[0]["id"]
+
+        client.delete(f"/api/auth/sessions/{session_id}", headers=_auth(access))
+
+        res = client.post("/api/auth/refresh", cookies={"refresh_token": refresh})
+        assert res.status_code == 401
+
+    def test_revoke_requires_auth(self, client):
+        res = client.delete("/api/auth/sessions/1")
+        assert res.status_code == 401
+
+
+class TestRevokeAllSessions:
+
+    def test_revoke_all_returns_204(self, client):
+        _register(client)
+        access, _ = _login(client)
+        res = client.delete("/api/auth/sessions", headers=_auth(access))
+        assert res.status_code == 204
+
+    def test_no_sessions_after_revoke_all(self, client):
+        _register(client)
+        # Create two sessions
+        client.post("/api/auth/login", data={"username": "rt@test.com", "password": "Pass123!"})
+        res2 = client.post("/api/auth/login", data={"username": "rt@test.com", "password": "Pass123!"})
+        access = res2.json()["access_token"]
+
+        client.delete("/api/auth/sessions", headers=_auth(access))
+
+        sessions = client.get("/api/auth/sessions", headers=_auth(access)).json()
+        assert len(sessions) == 0
+
+    def test_all_refresh_tokens_fail_after_revoke_all(self, client):
+        _register(client)
+        _, refresh1 = _login(client)
+        _, refresh2 = _login(client)
+        access, _ = _login(client)
+
+        client.delete("/api/auth/sessions", headers=_auth(access))
+
+        assert client.post("/api/auth/refresh", cookies={"refresh_token": refresh1}).status_code == 401
+        assert client.post("/api/auth/refresh", cookies={"refresh_token": refresh2}).status_code == 401
+
+    def test_revoke_all_requires_auth(self, client):
+        res = client.delete("/api/auth/sessions")
+        assert res.status_code == 401
