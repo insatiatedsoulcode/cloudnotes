@@ -41,4 +41,4 @@ EXPOSE 80
 
 # Check that nginx is up and serving the React app
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost/ > /dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1/ > /dev/null || exit 1
