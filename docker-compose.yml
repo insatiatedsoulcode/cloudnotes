@@ -82,7 +82,7 @@ services:
       # CLOUD EQUIVALENT: EFS mount or S3 (swap StorageBackend to S3Storage)
       - uploads_data:/app/uploads
     ports:
-      - "8000:8000"     # direct access for curl / Postman / Swagger UI
+      - "8001:8000"     # 8001 on host → avoids clash with native uvicorn on 8000
     depends_on:
       db:
         condition: service_healthy
