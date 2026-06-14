@@ -21,13 +21,27 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
-      # Named volume: data persists across `docker compose down` / `up`
-      # CLOUD EQUIVALENT: RDS (managed) or EBS volume mounted to EC2
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"     # expose for local DB clients (TablePlus, psql, etc.)
+      - "5433:5432"     # 5433 on host so it doesn't clash with a local Postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d cloudnotes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  # CLOUD EQUIVALENT: ElastiCache (Redis OSS)
+  # Used for: cache-aside note list/detail, rate-limit counters
+  redis:
+    image: redis:7-alpine
+    container_name: cloudnotes_redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6380:6379"     # 6380 on host so it doesn't clash with a local Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -39,22 +53,53 @@ services:
       dockerfile: Dockerfile
     container_name: cloudnotes_backend
     environment:
-      # Connection string uses "db" — Docker's internal DNS resolves service names
+      # "db" and "redis" resolve via Docker's internal DNS (service names)
       DATABASE_URL: postgresql://postgres:postgres@db:5432/cloudnotes
+      REDIS_URL: redis://redis:6379
+
+      # SECURITY: override SECRET_KEY in production via Secrets Manager / env injection
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+
       APP_ENV: local
+      JWT_EXPIRE_MINUTES: 60
+      REFRESH_TOKEN_EXPIRE_DAYS: 30
+
+      # Skip email verification in local Docker (no SMTP server running)
+      AUTO_VERIFY_EMAILS: "true"
+
+      # Human-readable logs in local; switch to "json" for CloudWatch / Datadog
+      LOG_FORMAT: text
+
+      # SMTP — update if you add MailHog or SES
+      SMTP_HOST: ""
+      SMTP_PORT: "1025"
+      EMAIL_FROM: noreply@cloudnotes.local
+      APP_BASE_URL: http://localhost
+
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      # Named volume keeps uploaded files across container restarts.
+      # CLOUD EQUIVALENT: EFS mount or S3 (swap StorageBackend to S3Storage)
+      - uploads_data:/app/uploads
     ports:
-      - "8000:8000"     # expose for direct API testing (curl, Postman, /docs)
+      - "8000:8000"     # direct access for curl / Postman / Swagger UI
     depends_on:
       db:
-        condition: service_healthy   # wait for Postgres to be ready
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     develop:
       watch:
-        # Hot-reload: sync local code changes into the container without rebuild
+        # Sync code changes into the running container without a full rebuild.
+        # Uvicorn --reload inside the container picks up the synced changes.
+        # CLOUD EQUIVALENT: CodeDeploy in-place update or ECS rolling deploy
         - action: sync
           path: ./backend/app
           target: /app/app
 
   # ── React frontend (Nginx) ──────────────────────────────────────────────────
+  # Build context is the project root so the Dockerfile can reach both
+  # frontend/ (React source) and nginx/ (nginx.conf) in one context.
   frontend:
     build:
       context: .
@@ -63,11 +108,13 @@ services:
         APP_ENV: local
     container_name: cloudnotes_frontend
     ports:
-      - "80:80"         # access the app at http://localhost
+      - "80:80"         # access the full app at http://localhost
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 
 volumes:
-  # Named volumes survive container restarts — unlike bind mounts they're managed by Docker
-  postgres_data:
+  postgres_data:    # survives docker compose down / up
+  redis_data:       # survives docker compose down / up
+  uploads_data:     # uploaded file attachments
