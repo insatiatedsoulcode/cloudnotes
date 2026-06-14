@@ -34,10 +34,18 @@ async function request(path, options = {}) {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      // 401 = token expired or invalid — caller handles logout
       console.error("%cError body:", "color: #c53030", err);
       console.groupEnd();
-      throw new Error(err.detail || `HTTP ${res.status}`);
+      // Pydantic validation errors: detail is an array of {msg, loc, ...}
+      // FastAPI business errors: detail is a plain string
+      const detail = err.detail;
+      let message;
+      if (Array.isArray(detail)) {
+        message = detail.map(e => e.msg.replace(/^Value error,\s*/i, "")).join("; ");
+      } else {
+        message = detail || `HTTP ${res.status}`;
+      }
+      throw new Error(message);
     }
 
     if (res.status === 204) {

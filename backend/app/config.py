@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # Logging — "text" for human-readable dev output; "json" for CloudWatch / Datadog
     LOG_FORMAT: str = "text"
 
+    # Set True in local .env so new registrations skip email verification.
+    # Never set in production — verification protects against fake accounts.
+    AUTO_VERIFY_EMAILS: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

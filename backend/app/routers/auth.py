@@ -157,10 +157,30 @@ def register(request: Request, data: UserCreate, background_tasks: BackgroundTas
     db.refresh(user)
     log.info("REGISTER  → id=%d  role=%s", user.id, user.role)
 
-    raw_token = _issue_verification(user.id, db)
-    background_tasks.add_task(send_verification_email, to=user.email, token=raw_token)
+    if settings.AUTO_VERIFY_EMAILS:
+        user.is_verified = True
+        db.commit()
+        log.info("REGISTER  → auto-verified (AUTO_VERIFY_EMAILS=true)")
+    else:
+        raw_token = _issue_verification(user.id, db)
+        background_tasks.add_task(send_verification_email, to=user.email, token=raw_token)
 
     return user
+
+
+@router.post("/dev-verify", status_code=200, include_in_schema=False)
+def dev_verify(email: str, db: Session = Depends(get_db)):
+    """Force-verify an email in dev/local mode. Hidden from OpenAPI docs.
+    Only active when AUTO_VERIFY_EMAILS=true — returns 404 in production."""
+    if not settings.AUTO_VERIFY_EMAILS:
+        raise HTTPException(status_code=404, detail="Not found")
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_verified = True
+    db.commit()
+    log.info("DEV-VERIFY  email=%s", email)
+    return {"verified": True, "email": email}
 
 
 @router.post("/login", response_model=Token)
