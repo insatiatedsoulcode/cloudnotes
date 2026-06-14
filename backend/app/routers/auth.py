@@ -183,6 +183,9 @@ def login(
     if not user or not _verify(form.password, user.password_hash):
         log.warning("LOGIN failed  email=%s", form.username)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.is_active:
+        log.warning("LOGIN blocked  user_id=%d  reason=suspended", user.id)
+        raise HTTPException(status_code=403, detail="Account suspended")
 
     access_token = _make_access_token(user.id)
     log_action(db, action="user_login", user_id=user.id, resource_type="user", resource_id=user.id,

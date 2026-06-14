@@ -38,6 +38,24 @@ class UserProfile(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserAdminView(BaseModel):
+    """Admin-plane view of a user — includes note_count derived via a subquery."""
+    id: int
+    email: str
+    role: str
+    is_active: bool
+    is_verified: bool
+    note_count: int
+    created_at: datetime
+
+
+class SystemStats(BaseModel):
+    total_users: int
+    total_notes: int
+    notes_today: int
+    active_sessions: int
+
+
 class UserUpdate(BaseModel):
     """Change password. Email change requires verification (F-05)."""
     current_password: str
