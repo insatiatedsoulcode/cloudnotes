@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     STORAGE_BACKEND: str = "local"
     UPLOADS_DIR: str = "./uploads"
 
+    # Logging — "text" for human-readable dev output; "json" for CloudWatch / Datadog
+    LOG_FORMAT: str = "text"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

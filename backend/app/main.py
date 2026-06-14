@@ -1,4 +1,5 @@
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.config import settings
 from app.limiter import limiter, rate_limit_exceeded_handler
-from app.logger import get_logger, setup_logging
+from app.logger import get_logger, request_id_var, setup_logging
 from app.routers import admin, attachments, auth, notes, sharing, tags, users
 
 setup_logging()
@@ -77,12 +78,15 @@ async def log_requests(request: Request, call_next):
     req_log = get_logger("request")
     res_log = get_logger("response")
 
+    # Generate a unique ID for this request and store it in the ContextVar so
+    # every log line emitted during this request carries the same correlation ID.
+    rid = str(uuid.uuid4())
+    request_id_var.set(rid)
+
     body_preview = ""
     if request.method not in ("GET", "DELETE"):
         content_type = request.headers.get("content-type", "")
         if "multipart/" in content_type:
-            # Don't read binary multipart bodies into the log — binary bytes
-            # crash decode() and the multipart stream still needs to be parsed.
             body_preview = "<binary upload>"
         else:
             raw = await request.body()
@@ -94,9 +98,13 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     duration_ms = (time.perf_counter() - t0) * 1000
 
+    # Expose the request ID as a response header so clients can correlate.
+    response.headers["X-Request-ID"] = rid
+
     res_log.info(
-        "%s %s  status=%d  duration=%.1fms",
+        "%s %s  status=%d  duration_ms=%.1f",
         request.method, request.url.path, response.status_code, duration_ms,
+        extra={"duration_ms": round(duration_ms, 1), "status_code": response.status_code},
     )
     return response
 
