@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
 from passlib.context import CryptContext
@@ -143,7 +143,8 @@ def _issue_verification(user_id: int, db: Session) -> str:
 
 @router.post("/register", response_model=UserResponse, status_code=201)
 @limiter.limit("3/minute")
-def register(request: Request, data: UserCreate, db: Session = Depends(get_db)):
+def register(request: Request, data: UserCreate, background_tasks: BackgroundTasks,
+             db: Session = Depends(get_db)):
     log.info("REGISTER  email=%s", data.email)
     if db.query(User).filter(User.email == data.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -157,7 +158,7 @@ def register(request: Request, data: UserCreate, db: Session = Depends(get_db)):
     log.info("REGISTER  → id=%d  role=%s", user.id, user.role)
 
     raw_token = _issue_verification(user.id, db)
-    send_verification_email(to=user.email, token=raw_token)
+    background_tasks.add_task(send_verification_email, to=user.email, token=raw_token)
 
     return user
 
@@ -291,6 +292,7 @@ def verify_email(token: str, db: Session = Depends(get_db)):
 @limiter.limit("1 per 5 minutes")
 def resend_verification(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -299,7 +301,7 @@ def resend_verification(
         raise HTTPException(status_code=400, detail="Email is already verified")
 
     raw_token = _issue_verification(current_user.id, db)
-    send_verification_email(to=current_user.email, token=raw_token)
+    background_tasks.add_task(send_verification_email, to=current_user.email, token=raw_token)
 
     log.info("RESEND-VERIFY  user_id=%d", current_user.id)
     return {"message": "Verification email resent. Check your inbox."}
@@ -310,6 +312,7 @@ def resend_verification(
 def forgot_password(
     request: Request,
     data: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
@@ -322,7 +325,7 @@ def forgot_password(
     if user:
         raw, hashed = generate_token()
         get_redis().setex(f"pwd_reset:{hashed}", _RESET_TOKEN_TTL_SECONDS, str(user.id))
-        send_password_reset_email(to=user.email, token=raw)
+        background_tasks.add_task(send_password_reset_email, to=user.email, token=raw)
         log.info("FORGOT-PASSWORD  user_id=%d  email=%s", user.id, user.email)
     else:
         log.info("FORGOT-PASSWORD  email=%s  not_found=true", data.email)

@@ -1,4 +1,5 @@
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from alembic import command
@@ -24,10 +25,23 @@ _alembic_cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
 command.upgrade(_alembic_cfg, "head")
 log.info("Database migrations applied")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.APP_ENV != "test":
+        from app.scheduler import start_scheduler, stop_scheduler
+        start_scheduler()
+        yield
+        stop_scheduler()
+    else:
+        yield
+
+
 app = FastAPI(
     title="CloudNotes API",
     description="A simple notes app — POC for cloud engineering concepts",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Rate limiter — must be set on app.state before SlowAPIMiddleware is added
