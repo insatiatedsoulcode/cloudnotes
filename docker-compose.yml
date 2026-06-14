@@ -105,7 +105,7 @@ services:
       context: .
       dockerfile: ./frontend/Dockerfile
       args:
-        APP_ENV: local
+        APP_ENV: docker
     container_name: cloudnotes_frontend
     ports:
       - "80:80"         # access the full app at http://localhost
