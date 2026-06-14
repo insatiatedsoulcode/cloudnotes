@@ -37,5 +37,7 @@ class NoteResponse(BaseModel):
     # Set to True in list responses when the note is shared with the requesting user.
     # Always False for notes the user owns or in single-note responses.
     is_shared_with_me: bool = False
+    # Non-null only for soft-deleted notes (visible in /admin/notes/trash).
+    deleted_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}

@@ -4,6 +4,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.audit import log_action
 from app.cache import cache_delete_pattern
 from app.config import settings
 from app.database import get_db
@@ -25,7 +26,7 @@ _SHARE_LINK_TTL_DAYS = 7
 
 def _require_note_owner(note_id: int, db: Session, current_user: User) -> Note:
     """Load the note and verify the caller owns it (or is admin). Raises 403/404."""
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).filter(Note.id == note_id, Note.deleted_at.is_(None)).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     if note.owner_id != current_user.id and current_user.role != "admin":
@@ -64,6 +65,9 @@ def share_note_with_user(
 
     if existing:
         existing.permission = data.permission
+        log_action(db, action="share_update", user_id=current_user.id, resource_type="note_share",
+                   resource_id=existing.id,
+                   details={"note_id": note_id, "target_user_id": target.id, "permission": data.permission})
         db.commit()
         db.refresh(existing)
         log.info("SHARE UPDATE  note_id=%d  target=%d  permission=%s", note_id, target.id, data.permission)
@@ -74,6 +78,10 @@ def share_note_with_user(
             permission=data.permission,
         )
         db.add(existing)
+        db.flush()
+        log_action(db, action="share_create", user_id=current_user.id, resource_type="note_share",
+                   resource_id=existing.id,
+                   details={"note_id": note_id, "target_user_id": target.id, "permission": data.permission})
         db.commit()
         db.refresh(existing)
         log.info("SHARE CREATE  note_id=%d  target=%d  permission=%s", note_id, target.id, data.permission)
@@ -187,7 +195,7 @@ def access_via_share_link(token: str, db: Session = Depends(get_db)):
     if not link:
         raise HTTPException(status_code=404, detail="Share link not found or expired")
 
-    note = db.query(Note).filter(Note.id == link.note_id).first()
+    note = db.query(Note).filter(Note.id == link.note_id, Note.deleted_at.is_(None)).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 

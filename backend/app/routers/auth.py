@@ -8,6 +8,7 @@ from jose import jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
+from app.audit import log_action
 from app.cache import get_redis
 from app.config import settings
 from app.database import get_db
@@ -148,6 +149,9 @@ def register(request: Request, data: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
     user = User(email=data.email, password_hash=_hash(data.password))
     db.add(user)
+    db.flush()
+    log_action(db, action="user_register", user_id=user.id, resource_type="user", resource_id=user.id,
+               details={"email": user.email})
     db.commit()
     db.refresh(user)
     log.info("REGISTER  → id=%d  role=%s", user.id, user.role)
@@ -180,6 +184,9 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     access_token = _make_access_token(user.id)
+    log_action(db, action="user_login", user_id=user.id, resource_type="user", resource_id=user.id,
+               ip_address=_client_ip(request))
+    db.commit()
     raw_refresh = _issue_refresh_token(user.id, db, request)
     _set_refresh_cookie(response, raw_refresh)
 
@@ -348,6 +355,7 @@ def reset_password(
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
 
     user.password_hash = _hash(data.new_password)
+    log_action(db, action="password_reset", user_id=user.id, resource_type="user", resource_id=user.id)
     db.commit()
 
     redis.delete(f"pwd_reset:{token_hash}")

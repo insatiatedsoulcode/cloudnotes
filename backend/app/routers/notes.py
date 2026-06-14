@@ -17,6 +17,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_verified
 from app.limiter import _get_user_or_ip, limiter
 from app.logger import get_logger
+from app.audit import log_action
 from app.models.note import Note
 from app.models.note_share import NoteShare
 from app.models.user import User
@@ -109,7 +110,7 @@ def list_notes(
             log.info("LIST  → cache hit  count=%d", len(cached))
             return cached
 
-    query = db.query(Note)
+    query = db.query(Note).filter(Note.deleted_at.is_(None))
 
     # Scope: admins see everything; regular users see own + public + shared with them.
     if current_user.role != "admin":
@@ -194,6 +195,10 @@ def create_note(
         visibility=note.visibility,
     )
     db.add(db_note)
+    db.flush()   # assigns db_note.id from the sequence before commit
+    log_action(db, action="note_create", user_id=current_user.id, resource_type="note",
+               resource_id=db_note.id,
+               details={"title": note.title, "visibility": note.visibility})
     db.commit()
     db.refresh(db_note)
     cache_delete_pattern("notes:list:*")
@@ -220,7 +225,7 @@ def get_note(
         log.info("GET  note_id=%d  → cache hit", note_id)
         return cached
 
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).filter(Note.id == note_id, Note.deleted_at.is_(None)).first()
     if not note:
         log.warning("GET  note_id=%d  → 404", note_id)
         raise HTTPException(status_code=404, detail="Note not found")
@@ -246,12 +251,17 @@ def update_note(
 ):
     changed = updates.model_dump(exclude_unset=True)
     log.info("UPDATE  user_id=%d  note_id=%d  fields=%s", current_user.id, note_id, list(changed.keys()))
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).filter(Note.id == note_id, Note.deleted_at.is_(None)).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     _check_ownership(note, current_user, db, allow_edit_share=True)
+    before = {field: getattr(note, field) for field in changed}
     for field, value in changed.items():
         setattr(note, field, value)
+    after = {field: getattr(note, field) for field in changed}
+    log_action(db, action="note_update", user_id=current_user.id, resource_type="note",
+               resource_id=note.id,
+               details={"changed_fields": list(changed.keys()), "before": before, "after": after})
     db.commit()
     db.refresh(note)
     cache_delete(f"notes:detail:{note_id}")
@@ -271,12 +281,14 @@ def delete_note(
     current_user: User = Depends(get_current_user),
 ):
     log.info("DELETE  user_id=%d  note_id=%d", current_user.id, note_id)
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).filter(Note.id == note_id, Note.deleted_at.is_(None)).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     _check_ownership(note, current_user)
-    db.delete(note)
+    note.deleted_at = datetime.utcnow()
+    log_action(db, action="note_delete", user_id=current_user.id, resource_type="note",
+               resource_id=note.id)
     db.commit()
     cache_delete(f"notes:detail:{note_id}")
     cache_delete_pattern("notes:list:*")
-    log.info("DELETE  note_id=%d  → cache invalidated", note_id)
+    log.info("DELETE  note_id=%d  → soft-deleted  cache invalidated", note_id)

@@ -19,6 +19,10 @@ class Note(Base):
     visibility = Column(String(10), nullable=False, default="private")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    # NULL = live note.  Non-NULL = soft-deleted at this timestamp.
+    # All normal queries must filter WHERE deleted_at IS NULL.
+    # Hard delete (and cascade to shares/links/attachments) happens via a scheduled job (F-12).
+    deleted_at = Column(DateTime, nullable=True, default=None)
     # Maintained by a DB trigger (notes_search_vector_trigger) on INSERT/UPDATE.
     # title weighted A (higher), content weighted B — ts_rank respects this ordering.
     search_vector = Column(TSVECTOR, nullable=True)

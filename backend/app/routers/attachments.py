@@ -74,7 +74,7 @@ def _serialize(att: Attachment, storage: StorageBackend) -> AttachmentResponse:
 
 def _require_note_write(note_id: int, user: User, db: Session) -> Note:
     """Owner or admin only — no share access for upload/delete."""
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).filter(Note.id == note_id, Note.deleted_at.is_(None)).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     if note.owner_id != user.id and user.role != "admin":
@@ -84,7 +84,7 @@ def _require_note_write(note_id: int, user: User, db: Session) -> Note:
 
 def _require_note_read(note_id: int, user: User, db: Session) -> Note:
     """Owner, admin, or any share recipient."""
-    note = db.query(Note).filter(Note.id == note_id).first()
+    note = db.query(Note).filter(Note.id == note_id, Note.deleted_at.is_(None)).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     if note.visibility == "private" and note.owner_id != user.id and user.role != "admin":
