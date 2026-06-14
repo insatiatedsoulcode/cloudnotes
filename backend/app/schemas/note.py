@@ -34,5 +34,8 @@ class NoteResponse(BaseModel):
     visibility: str
     created_at: datetime
     updated_at: datetime
+    # Set to True in list responses when the note is shared with the requesting user.
+    # Always False for notes the user owns or in single-note responses.
+    is_shared_with_me: bool = False
 
     model_config = {"from_attributes": True}

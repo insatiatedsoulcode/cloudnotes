@@ -18,6 +18,7 @@ from app.dependencies import get_current_user, require_verified
 from app.limiter import _get_user_or_ip, limiter
 from app.logger import get_logger
 from app.models.note import Note
+from app.models.note_share import NoteShare
 from app.models.user import User
 from app.schemas.note import NoteCreate, NoteResponse, NoteUpdate
 
@@ -25,9 +26,21 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 log = get_logger("notes")
 
 
-def _check_ownership(note: Note, user: User) -> None:
-    """Raise 403 if the user doesn't own the note and isn't an admin."""
+def _check_ownership(note: Note, user: User, db: Optional[Session] = None, *, allow_edit_share: bool = False) -> None:
+    """Raise 403 if the user doesn't own the note and isn't an admin.
+
+    When allow_edit_share=True, also grants access to users with an 'edit' share — used
+    for update_note (edit-share users can update; they still cannot delete).
+    """
     if note.owner_id != user.id and user.role != "admin":
+        if allow_edit_share and db:
+            share = db.query(NoteShare).filter(
+                NoteShare.note_id == note.id,
+                NoteShare.shared_with_user_id == user.id,
+                NoteShare.permission == "edit",
+            ).first()
+            if share:
+                return
         log.warning(
             "FORBIDDEN  user_id=%d tried to modify note_id=%d owned by user_id=%s",
             user.id, note.id, note.owner_id,
@@ -35,10 +48,21 @@ def _check_ownership(note: Note, user: User) -> None:
         raise HTTPException(status_code=403, detail="You don't own this note")
 
 
-def _check_read_access(note_data: dict, user: User) -> None:
-    """Raise 403 if a private note is accessed by a non-owner non-admin."""
+def _check_read_access(note_data: dict, user: User, db: Optional[Session] = None) -> None:
+    """Raise 403 if a private note is inaccessible to the user.
+
+    Access is granted when: user is the owner, user is an admin, or the note has
+    been explicitly shared with the user (any permission level).
+    """
     if note_data.get("visibility") == "private":
         if note_data.get("owner_id") != user.id and user.role != "admin":
+            if db:
+                share = db.query(NoteShare).filter(
+                    NoteShare.note_id == note_data["id"],
+                    NoteShare.shared_with_user_id == user.id,
+                ).first()
+                if share:
+                    return
             raise HTTPException(status_code=403, detail="This note is private")
 
 
@@ -87,11 +111,20 @@ def list_notes(
 
     query = db.query(Note)
 
-    # Scope: admins see everything; regular users see own + public.
+    # Scope: admins see everything; regular users see own + public + shared with them.
     if current_user.role != "admin":
-        query = query.filter(
-            or_(Note.owner_id == current_user.id, Note.visibility == "public")
-        )
+        shared_ids = {
+            r.note_id
+            for r in db.query(NoteShare.note_id)
+                       .filter(NoteShare.shared_with_user_id == current_user.id)
+                       .all()
+        }
+        conditions = [Note.owner_id == current_user.id, Note.visibility == "public"]
+        if shared_ids:
+            conditions.append(Note.id.in_(shared_ids))
+        query = query.filter(or_(*conditions))
+    else:
+        shared_ids = set()
 
     # Full-text search filter.
     if q:
@@ -121,7 +154,14 @@ def list_notes(
         query = query.order_by(sort_col.desc() if order == "desc" else sort_col.asc())
 
     notes = query.offset(skip).limit(limit).all()
-    data = [_serialize_note(n) for n in notes]
+    data = []
+    for note in notes:
+        d = _serialize_note(note)
+        # Mark notes the user doesn't own but has been given explicit share access to.
+        d["is_shared_with_me"] = (
+            note.id in shared_ids and note.owner_id != current_user.id
+        )
+        data.append(d)
 
     if use_cache:
         cache_set(cache_key, data, NOTES_LIST_TTL)
@@ -176,7 +216,7 @@ def get_note(
     if cached is not None:
         # Access control must be re-checked even on cache hits —
         # visibility or ownership may have changed since the key was written.
-        _check_read_access(cached, current_user)
+        _check_read_access(cached, current_user, db)
         log.info("GET  note_id=%d  → cache hit", note_id)
         return cached
 
@@ -186,7 +226,7 @@ def get_note(
         raise HTTPException(status_code=404, detail="Note not found")
 
     data = _serialize_note(note)
-    _check_read_access(data, current_user)
+    _check_read_access(data, current_user, db)
 
     cache_set(cache_key, data, NOTES_DETAIL_TTL)
     log.info("GET  note_id=%d  → db hit  title=%r", note_id, note.title)
@@ -209,7 +249,7 @@ def update_note(
     note = db.query(Note).filter(Note.id == note_id).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    _check_ownership(note, current_user)
+    _check_ownership(note, current_user, db, allow_edit_share=True)
     for field, value in changed.items():
         setattr(note, field, value)
     db.commit()

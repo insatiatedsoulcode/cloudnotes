@@ -74,7 +74,7 @@ def clean_tables(create_tables):
     """
     with _engine.connect() as conn:
         conn.execute(text(
-            "TRUNCATE TABLE refresh_tokens, email_verifications, notes, users RESTART IDENTITY CASCADE"
+            "TRUNCATE TABLE share_links, note_shares, refresh_tokens, email_verifications, notes, users RESTART IDENTITY CASCADE"
         ))
         conn.commit()
 

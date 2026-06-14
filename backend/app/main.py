@@ -10,7 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.limiter import limiter, rate_limit_exceeded_handler
 from app.logger import get_logger, setup_logging
-from app.routers import admin, auth, notes, users
+from app.routers import admin, auth, notes, sharing, users
 
 setup_logging()
 log = get_logger("app")
@@ -43,6 +43,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+app.include_router(sharing.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 
