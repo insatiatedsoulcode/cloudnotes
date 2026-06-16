@@ -60,7 +60,10 @@ test:backend:
     REDIS_URL: "memory://"
 
   cache:
-    key: pip-$CI_COMMIT_REF_SLUG
+    key:
+      files:
+        - backend/requirements.txt
+        - backend/requirements-dev.txt
     paths:
       - .pip-cache/
     policy: pull-push
