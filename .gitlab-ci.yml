@@ -1,10 +1,9 @@
 # CloudNotes — GitLab CI/CD Pipeline
 #
 # Stages:
-#   test   → run the full pytest suite against a real Postgres
-#   scan   → SAST, secret detection, dependency scanning
-#   build  → build Docker images, push to GitLab Container Registry
-#   deploy → (placeholder) rolling deploy to your target environment
+#   test   → pytest suite + SAST + secret detection + trivy dependency scan
+#   build  → Docker images pushed to GitLab Container Registry (main only)
+#   deploy → placeholder rolling deploy (manual gate, main only)
 #
 # Built-in GitLab variables used:
 #   CI_REGISTRY              → registry.gitlab.com
@@ -14,20 +13,19 @@
 #   CI_COMMIT_REF_SLUG       → branch name, URL-safe (e.g. "main")
 #
 # Security scanning tier notes:
-#   SAST + Secret Detection → available on ALL tiers (Free / Premium / Ultimate)
-#   Dependency Scanning     → requires GitLab Ultimate
-#   Results appear in: Security → Vulnerability Report (MR security widget on Ultimate)
+#   SAST + Secret Detection → available on ALL GitLab tiers (Free included)
+#   Dependency Scanning     → GitLab Ultimate only; trivy job below is the free alternative
+#   Security results appear in: Security → Vulnerability Report (MR widget on Ultimate)
 
 # ── GitLab managed security templates ──────────────────────────────────────────
-# GitLab injects pre-built analyzer jobs (semgrep for SAST, trufflehog for secrets).
-# No extra tools to install — the templates bring their own Docker images.
+# These inject semgrep (SAST) and trufflehog (secrets) analyzer jobs into the
+# test stage automatically. No extra config needed — they bring their own images.
 include:
   - template: Security/SAST.gitlab-ci.yml
   - template: Security/Secret-Detection.gitlab-ci.yml
 
 stages:
   - test
-  - scan
   - build
   - deploy
 
@@ -41,51 +39,34 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
-# ── Security scanner configuration ─────────────────────────────────────────────
+# ── Security scanner variables ─────────────────────────────────────────────────
 variables:
-  # Semgrep SAST: skip vendored/generated code
   SAST_EXCLUDED_PATHS: "spec,test,tests,tmp,.venv,node_modules,frontend/dist"
-  # Secret Detection: skip lock files and compiled output that contain false positives
-  SECRET_DETECTION_EXCLUDED_PATHS: ".venv,node_modules,frontend/dist,backend/requirements.txt"
-
-# Override the stage that the included templates inject their jobs into.
-# Both SAST and Secret Detection default to "test"; move them to "scan"
-# so they run after the pytest job and don't compete for the same runner slot.
-semgrep-sast:
-  stage: scan
-
-secret_detection:
-  stage: scan
+  SECRET_DETECTION_EXCLUDED_PATHS: ".venv,node_modules,frontend/dist"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 1 — TEST
+# Runs: pytest, semgrep SAST, secret detection (via templates), trivy CVE scan
 # ══════════════════════════════════════════════════════════════════════════════
 
 test:backend:
   stage: test
   image: python:3.11-slim
 
-  # GitLab services run as sibling containers.
-  # The service is reachable inside the job at the hostname "postgres".
+  # GitLab services run as sibling containers reachable at the alias hostname.
   services:
     - name: postgres:16-alpine
       alias: postgres
 
   variables:
-    # Postgres service config
     POSTGRES_DB: cloudnotes_test
     POSTGRES_USER: postgres
     POSTGRES_PASSWORD: postgres
-
-    # What conftest.py reads to build the SQLAlchemy engine
     TEST_DATABASE_URL: postgresql://postgres:postgres@postgres/cloudnotes_test
-
-    # App settings — must be set before any app module is imported
     DATABASE_URL: postgresql://postgres:postgres@postgres/cloudnotes_test
     SECRET_KEY: ci-test-secret-only
     APP_ENV: test
-    # slowapi uses in-memory store in test mode; fakeredis mocks the cache layer
     REDIS_URL: "memory://"
 
   cache:
@@ -99,14 +80,12 @@ test:backend:
     - pip install --cache-dir .pip-cache -r backend/requirements-dev.txt
 
   script:
-    - cd backend
-    - python -m pytest tests/ -q --tb=short
-      --junitxml=../test-results.xml
+    - cd backend && python -m pytest tests/ -q --tb=short --junitxml=../test-results.xml
 
   artifacts:
     when: always
     reports:
-      junit: test-results.xml   # shows pass/fail per test in the MR widget
+      junit: test-results.xml
     expire_in: 7 days
 
   rules:
@@ -114,28 +93,15 @@ test:backend:
     - if: $CI_COMMIT_BRANCH
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STAGE 2 — SCAN
-# SAST (semgrep) and Secret Detection jobs are injected here by the includes above.
-# The trivy job below is a free alternative to GitLab's Ultimate-only Dependency
-# Scanning — it scans requirements.txt and package.json for known CVEs.
-# ══════════════════════════════════════════════════════════════════════════════
-
 dependency-scan:trivy:
-  stage: scan
+  stage: test
   image:
     name: aquasec/trivy:latest
     entrypoint: [""]
   script:
-    # Scan Python dependencies
-    - trivy fs --exit-code 0 --severity HIGH,CRITICAL
-        --format table backend/requirements.txt
-    # Scan Node dependencies
-    - trivy fs --exit-code 0 --severity HIGH,CRITICAL
-        --format table frontend/package.json
-    # Write a JSON report as an artifact (viewable in the pipeline)
-    - trivy fs --exit-code 0 --severity HIGH,CRITICAL
-        --format json --output trivy-report.json .
+    - trivy fs --exit-code 0 --severity HIGH,CRITICAL --format table backend/requirements.txt
+    - trivy fs --exit-code 0 --severity HIGH,CRITICAL --format table frontend/package.json
+    - trivy fs --exit-code 0 --severity HIGH,CRITICAL --format json --output trivy-report.json .
   artifacts:
     when: always
     paths:
@@ -147,11 +113,11 @@ dependency-scan:trivy:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STAGE 3 — BUILD
-# Only runs on main after tests + scans pass.
-# Pushes images to GitLab Container Registry with two tags:
-#   :latest          → always points to the most recent main build
-#   :<commit-sha>    → immutable, used by deploy stage for exact rollback
+# STAGE 2 — BUILD
+# Only runs on main after all test/scan jobs pass.
+# Pushes images with two tags:
+#   :latest       → always points to the most recent main build
+#   :<commit-sha> → immutable tag used by deploy for exact rollback
 # ══════════════════════════════════════════════════════════════════════════════
 
 .build-base: &build-base
@@ -193,15 +159,15 @@ build:frontend:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STAGE 4 — DEPLOY  (placeholder — wire up to your target)
+# STAGE 3 — DEPLOY  (placeholder — wire up to your target)
 #
 # Options:
-#   A. SSH into a VPS and run docker compose pull && docker compose up -d
-#   B. aws ecs update-service --force-new-deployment  (ECS rolling deploy)
-#   C. kubectl set image deployment/...              (Kubernetes)
-#   D. Render / Railway / Fly.io CLI deploy command
+#   A. SSH into a VPS:  docker compose pull && docker compose up -d
+#   B. AWS ECS:         aws ecs update-service --force-new-deployment
+#   C. Kubernetes:      kubectl set image deployment/...
+#   D. Render / Fly.io CLI deploy command
 #
-# Add the required credentials as masked CI/CD variables in:
+# Add credentials as masked CI/CD variables:
 #   GitLab → Project → Settings → CI/CD → Variables
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -219,7 +185,7 @@ deploy:production:
     - echo "Wire up your deploy command here (SSH / ECS / kubectl / Fly.io)"
   environment:
     name: production
-    url: https://your-app-url.com    # update this
+    url: https://your-app-url.com
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
-      when: manual    # requires a human to click Deploy in the GitLab UI
+      when: manual
