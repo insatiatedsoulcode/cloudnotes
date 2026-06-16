@@ -17,6 +17,10 @@
 #   Dependency Scanning     → GitLab Ultimate only; trivy job below is the free alternative
 #   Security results appear in: Security → Vulnerability Report (MR widget on Ultimate)
 
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
 stages:
   - test
   - build
@@ -24,12 +28,12 @@ stages:
 
 # ── Global defaults ────────────────────────────────────────────────────────────
 default:
-  interruptible: true     # newer pipeline cancels the previous one on the same branch
+  interruptible: true
 
-# ── Smoke test: no rules, no conditions — must always appear ──────────────────
-smoke:
-  stage: test
-  script: echo "CI is alive"
+# ── Security scanner variables ──────────────────────────────────────────────────
+variables:
+  SAST_EXCLUDED_PATHS: "spec,test,tests,tmp,.venv,node_modules,frontend/dist"
+  SECRET_DETECTION_EXCLUDED_PATHS: ".venv,node_modules,frontend/dist"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 1 — TEST
