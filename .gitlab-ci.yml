@@ -70,8 +70,12 @@ test:backend:
 
   before_script:
     - pip install --cache-dir .pip-cache -r backend/requirements.txt -r backend/requirements-dev.txt
+    - python -c "import tzlocal; print('tzlocal after install:', tzlocal.__file__)"
+    - pip show tzlocal
+    - pip show apscheduler | grep -E "Version|Requires"
 
   script:
+    - python -c "import tzlocal; print('tzlocal in script:', tzlocal.__file__)"
     - cd backend && python -m pytest tests/ -q --tb=short --junitxml=../test-results.xml
 
   artifacts:
