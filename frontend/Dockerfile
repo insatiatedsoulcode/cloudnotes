@@ -9,7 +9,7 @@ WORKDIR /app
 # Copy only the package files first so npm install is cached as its own layer.
 # Rebuilds skip this layer unless package.json / package-lock.json changed.
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --silent
+RUN npm ci
 
 # Copy the rest of the frontend source
 COPY frontend/ ./
