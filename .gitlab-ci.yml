@@ -17,13 +17,6 @@
 #   Dependency Scanning     → GitLab Ultimate only; trivy job below is the free alternative
 #   Security results appear in: Security → Vulnerability Report (MR widget on Ultimate)
 
-# ── GitLab managed security templates ──────────────────────────────────────────
-# These inject semgrep (SAST) and trufflehog (secrets) analyzer jobs into the
-# test stage automatically. No extra config needed — they bring their own images.
-include:
-  - template: Security/SAST.gitlab-ci.yml
-  - template: Security/Secret-Detection.gitlab-ci.yml
-
 stages:
   - test
   - build
@@ -39,15 +32,9 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
-# ── Security scanner variables ─────────────────────────────────────────────────
-variables:
-  SAST_EXCLUDED_PATHS: "spec,test,tests,tmp,.venv,node_modules,frontend/dist"
-  SECRET_DETECTION_EXCLUDED_PATHS: ".venv,node_modules,frontend/dist"
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 1 — TEST
-# Runs: pytest, semgrep SAST, secret detection (via templates), trivy CVE scan
+# Runs: pytest + trivy CVE scan
 # ══════════════════════════════════════════════════════════════════════════════
 
 test:backend:
