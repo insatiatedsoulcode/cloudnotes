@@ -69,8 +69,7 @@ test:backend:
     policy: pull-push
 
   before_script:
-    - pip install --cache-dir .pip-cache -r backend/requirements.txt
-    - pip install --cache-dir .pip-cache -r backend/requirements-dev.txt
+    - pip install --cache-dir .pip-cache -r backend/requirements.txt -r backend/requirements-dev.txt
 
   script:
     - cd backend && python -m pytest tests/ -q --tb=short --junitxml=../test-results.xml
