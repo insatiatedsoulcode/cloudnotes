@@ -26,6 +26,11 @@ stages:
 default:
   interruptible: true     # newer pipeline cancels the previous one on the same branch
 
+# ── Smoke test: no rules, no conditions — must always appear ──────────────────
+smoke:
+  stage: test
+  script: echo "CI is alive"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 1 — TEST
 # Runs: pytest + trivy CVE scan
