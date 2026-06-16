@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Logging — "text" for human-readable dev output; "json" for CloudWatch / Datadog
     LOG_FORMAT: str = "text"
 
+    # Comma-separated list of allowed CORS origins.
+    # Production: set to your actual frontend domain, e.g. "https://app.cloudnotes.com"
+    # Local dev:  "http://localhost:3000,http://localhost"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost"
+
     # Set True in local .env so new registrations skip email verification.
     # Never set in production — verification protects against fake accounts.
     AUTO_VERIFY_EMAILS: bool = False

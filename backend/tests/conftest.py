@@ -29,7 +29,10 @@ import app.models  # noqa: F401 — registers all ORM models before create_all
 from app.database import Base, get_db
 from app.main import app
 
-TEST_DB_URL = "postgresql://deepakkumarsingh@localhost:5432/cloudnotes_test"
+TEST_DB_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql://deepakkumarsingh@localhost:5432/cloudnotes_test",
+)
 
 _engine = create_engine(TEST_DB_URL)
 _TestSession = sessionmaker(autocommit=False, autoflush=False, bind=_engine)

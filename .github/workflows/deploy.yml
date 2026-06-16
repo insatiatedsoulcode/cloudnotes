@@ -51,18 +51,24 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt pytest httpx
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt
 
       - name: Run tests
         env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cloudnotes_test
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cloudnotes_test
+          SECRET_KEY: ci-test-secret-only
+          APP_ENV: test
+          REDIS_URL: "memory://"
         run: |
           cd backend
-          python -m pytest tests/ -v --tb=short || echo "No tests found — add tests in backend/tests/"
+          python -m pytest tests/ -v --tb=short
 
 
   # ── Job 2 & 3: Build + Deploy (only on push to main) ───────────────────────
