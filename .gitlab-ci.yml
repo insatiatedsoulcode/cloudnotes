@@ -26,12 +26,6 @@ stages:
 default:
   interruptible: true     # newer pipeline cancels the previous one on the same branch
 
-# ── Pipeline rules ─────────────────────────────────────────────────────────────
-workflow:
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH
-
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 1 — TEST
 # Runs: pytest + trivy CVE scan
