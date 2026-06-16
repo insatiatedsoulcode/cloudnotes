@@ -1,0 +1,37 @@
+# Fly.io deployment config for the React + Nginx frontend.
+# Build context is the project root (same as docker-compose: context: .).
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# After deploying the backend, update VITE_API_URL to the real backend URL
+# and redeploy:  fly deploy --app cloudnotes-app
+
+app = "cloudnotes-app"
+primary_region = "bom"   # Mumbai — keep in sync with backend region
+
+[build]
+  dockerfile = "frontend/Dockerfile"
+
+  [build.args]
+    NGINX_ENV    = "prod"
+    # Replace this with your actual backend URL after the first backend deploy.
+    # Format: https://<your-backend-app-name>.fly.dev/api
+    VITE_API_URL = "https://cloudnotes-api.fly.dev/api"
+
+[http_service]
+  internal_port        = 80
+  force_https          = true
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/health"
+    timeout      = "5s"
+    type         = "http"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "256mb"

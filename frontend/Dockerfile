@@ -21,6 +21,12 @@ COPY frontend/ ./
 ARG APP_ENV=production
 ENV VITE_APP_ENV=$APP_ENV
 
+# VITE_API_URL is empty in local/docker-compose (Nginx proxy handles /api/).
+# Set it to the backend's public URL when building for cloud deployments so the
+# React bundle calls the backend directly without an Nginx proxy in the middle.
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
+
 RUN npm run build
 # React build output lands in /app/dist
 
@@ -28,11 +34,22 @@ RUN npm run build
 # ── Stage 2: serve with Nginx ─────────────────────────────────────────────────
 FROM nginx:1.27-alpine
 
+# NGINX_ENV selects the nginx config:
+#   local (default) — includes /api/ proxy to backend container (docker-compose)
+#   prod            — static files only; React calls the backend URL directly
+ARG NGINX_ENV=local
+
 # Remove the default placeholder config
 RUN rm /etc/nginx/conf.d/default.conf
 
-# nginx.conf lives in nginx/ at the project root — reachable because context is .
-COPY nginx/nginx.conf /etc/nginx/conf.d/app.conf
+# Copy both configs then pick the right one
+COPY nginx/nginx.conf nginx/nginx.prod.conf /tmp/nginx/
+RUN if [ "$NGINX_ENV" = "prod" ]; then \
+      mv /tmp/nginx/nginx.prod.conf /etc/nginx/conf.d/app.conf; \
+    else \
+      mv /tmp/nginx/nginx.conf /etc/nginx/conf.d/app.conf; \
+    fi && \
+    rm -rf /tmp/nginx
 
 # Copy the compiled React app
 COPY --from=builder /app/dist /usr/share/nginx/html

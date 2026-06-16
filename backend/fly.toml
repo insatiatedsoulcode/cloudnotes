@@ -1,0 +1,43 @@
+# Fly.io deployment config for the FastAPI backend.
+# Docs: https://fly.io/docs/reference/configuration/
+#
+# Secrets (set via `fly secrets set --app cloudnotes-api`):
+#   DATABASE_URL   — Supabase connection string (postgresql://...)
+#   SECRET_KEY     — random 32+ char string  (openssl rand -hex 32)
+#   REDIS_URL      — memory:// for demo  OR  an Upstash Redis URL
+#   CORS_ORIGINS   — https://cloudnotes-app.fly.dev (the frontend URL)
+
+app = "cloudnotes-api"
+primary_region = "bom"   # Mumbai — change if you prefer a different region
+
+[build]
+
+[env]
+  APP_ENV     = "production"
+  LOG_FORMAT  = "json"
+  UPLOADS_DIR = "/app/uploads"
+
+# Persistent volume for uploaded file attachments.
+# Created once via: fly volumes create uploads --size 1 --app cloudnotes-api
+[[mounts]]
+  source      = "uploads"
+  destination = "/app/uploads"
+
+[http_service]
+  internal_port       = 8000
+  force_https         = true
+  auto_stop_machines  = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval     = "15s"
+    method       = "GET"
+    path         = "/health"
+    timeout      = "5s"
+    type         = "http"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "256mb"

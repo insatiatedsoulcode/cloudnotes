@@ -1,4 +1,4 @@
-const BASE = "/api";
+const BASE = import.meta.env.VITE_API_URL || "/api";
 
 // Reads token from localStorage on every request — no need to pass it around.
 function getAuthHeader() {
