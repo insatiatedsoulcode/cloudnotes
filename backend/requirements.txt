@@ -1,5 +1,4 @@
 apscheduler>=3.10.0
-tzlocal>=3.0
 python-json-logger>=2.0.7
 fastapi==0.111.0
 slowapi==0.1.9

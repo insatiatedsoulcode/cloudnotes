@@ -61,9 +61,6 @@ test:backend:
 
   before_script:
     - pip install --no-cache-dir -r backend/requirements.txt -r backend/requirements-dev.txt
-    - ls /usr/local/lib/python3.11/site-packages/ | grep -i tzlocal || echo "NO tzlocal in site-packages"
-    - python -c "import sys; print('sys.path:', sys.path)"
-    - python -c "import tzlocal; print('tzlocal OK:', tzlocal.__file__)" || echo "IMPORT FAILED"
 
   script:
     - cd backend && python -m pytest tests/ -q --tb=short --junitxml=../test-results.xml
